@@ -222,7 +222,8 @@ app.get("/api/stats", async (_req, res) => {
 });
 
 // Serve static files in production
-const distPath = path.resolve(__dirname, "../dist");
+// Server is compiled to web/dist/server/index.js, so the frontend build is at web/dist/
+const distPath = path.resolve(__dirname, "..");
 app.use(express.static(distPath));
 
 // Catch-all for SPA routing (Express 5 compatible)
