@@ -21,6 +21,7 @@ import {
   type AppConfig,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { getCountryFlag } from "@/lib/countryFlags";
 
 interface CookieFile {
   name: string;
@@ -566,7 +567,12 @@ function ResultRow({ result }: { result: ProgressUpdate }) {
             <Badge variant="outline" className="text-xs">{result.planName}</Badge>
           )}
           {result.country && (
-            <span className="text-xs text-muted-foreground">{result.country}</span>
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              {getCountryFlag(result.country) ? (
+                <span className="text-sm leading-none">{getCountryFlag(result.country)}</span>
+              ) : null}
+              {result.country}
+            </span>
           )}
         </div>
         {result.email && (

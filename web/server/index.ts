@@ -301,11 +301,13 @@ app.get("/api/recheck/count", async (_req, res) => {
 // Generate a single account from a random stored hit, recheck it, and return full details
 app.post("/api/generate-account", async (req, res) => {
   try {
-    const { proxies: proxyText, config: userConfig, threads, excludeId } = req.body as {
+    const { proxies: proxyText, config: userConfig, threads, excludeId, country, plan } = req.body as {
       proxies?: string;
       config?: Partial<AppConfig>;
       threads?: number;
       excludeId?: number;
+      country?: string;
+      plan?: string;
     };
 
     const config = userConfig ? mergeConfig(DEFAULT_CONFIG, userConfig) : DEFAULT_CONFIG;
@@ -321,8 +323,19 @@ app.post("/api/generate-account", async (req, res) => {
 
     const storedHits = await getAllHitsResults(5000, 0);
     let candidates = storedHits;
-    if (excludeId && storedHits.length > 1) {
-      candidates = storedHits.filter((h) => h.id !== excludeId);
+    // Filter by country if specified
+    if (country && country !== "all") {
+      candidates = candidates.filter((h) => h.country && h.country.toLowerCase() === country.toLowerCase());
+    }
+    // Filter by plan if specified
+    if (plan && plan !== "all") {
+      candidates = candidates.filter((h) =>
+        (h.plan_key && h.plan_key === plan) ||
+        (h.plan_name && h.plan_name.toLowerCase().includes(plan.toLowerCase()))
+      );
+    }
+    if (excludeId && candidates.length > 1) {
+      candidates = candidates.filter((h) => h.id !== excludeId);
     }
     if (candidates.length === 0) {
       res.status(400).json({ error: "No other stored hits to generate from" });

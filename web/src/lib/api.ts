@@ -233,12 +233,14 @@ export async function generateAccount(
   proxies: string,
   config: Partial<AppConfig>,
   threads: number,
-  excludeId?: number
+  excludeId?: number,
+  country?: string,
+  plan?: string
 ): Promise<GeneratedAccount> {
   const res = await fetch(`${API_BASE}/api/generate-account`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proxies, config, threads, excludeId }),
+    body: JSON.stringify({ proxies, config, threads, excludeId, country, plan }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Failed to generate account" }));
