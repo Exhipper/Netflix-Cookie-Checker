@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: netflix-cookie-checker
+    runtime: node
+    plan: free
+    buildCommand: cd web && bun install && bun run build
+    startCommand: node dist/server/index.js
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
