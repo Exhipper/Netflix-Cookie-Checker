@@ -183,3 +183,28 @@ export async function checkHealth(): Promise<{ status: string; database: string 
   if (!res.ok) throw new Error("Health check failed");
   return res.json();
 }
+
+/** Recheck all stored hits in the database. */
+export async function recheckHits(
+  proxies: string,
+  config: Partial<AppConfig>,
+  threads: number
+): Promise<{ runId: string; total: number; threads: number; recheck: boolean }> {
+  const res = await fetch(`${API_BASE}/api/recheck`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proxies, config, threads }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to start recheck" }));
+    throw new Error(err.error || "Failed to start recheck");
+  }
+  return res.json();
+}
+
+/** Get count of stored hits available for recheck. */
+export async function getRecheckCount(): Promise<{ count: number }> {
+  const res = await fetch(`${API_BASE}/api/recheck/count`);
+  if (!res.ok) throw new Error("Failed to fetch recheck count");
+  return res.json();
+}

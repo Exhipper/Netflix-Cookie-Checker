@@ -213,6 +213,55 @@ export async function deleteRun(runId: string): Promise<void> {
   await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
 }
 
+/** Fetch all stored hit results (success/free/duplicate) with their cookie content for rechecking. */
+export async function getAllHitsResults(
+  limit = 1000,
+  offset = 0
+): Promise<ResultRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM results WHERE status IN ('success', 'free', 'duplicate') AND cookie_content IS NOT NULL
+     ORDER BY checked_at DESC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  return result.rows as ResultRecord[];
+}
+
+/** Count all stored hit results. */
+export async function countAllHitsResults(): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free', 'duplicate') AND cookie_content IS NOT NULL`
+  );
+  return parseInt(result.rows[0]?.count || "0", 10);
+}
+
+/** Update an existing result row with new check data. */
+export async function updateResult(
+  resultId: number,
+  result: CheckResult
+): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `UPDATE results SET status = $1, plan_key = $2, plan_name = $3, country = $4, email = $5, reason = $6,
+     on_hold = $7, account_info = $8, formatted_output = $9, nftoken_data = $10, checked_at = NOW()
+     WHERE id = $11`,
+    [
+      result.status,
+      result.planKey || null,
+      result.planName || null,
+      result.country || null,
+      result.email || null,
+      result.reason || null,
+      result.onHold || false,
+      result.accountInfo ? JSON.stringify(result.accountInfo) : null,
+      result.formattedOutput || null,
+      result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+      resultId,
+    ]
+  );
+}
+
 export async function getStats(): Promise<any> {
   const pool = getPool();
   const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);

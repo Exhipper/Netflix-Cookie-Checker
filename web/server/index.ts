@@ -12,6 +12,9 @@ import {
   getRunResults,
   deleteRun,
   getStats,
+  getAllHitsResults,
+  countAllHitsResults,
+  updateResult,
 } from "./db.js";
 import { runCheck } from "./checker.js";
 import { parseProxies } from "./proxy.js";
@@ -159,6 +162,75 @@ app.post("/api/check/:runId/cancel", (req, res) => {
     res.json({ success: true, message: "Run cancelled" });
   } else {
     res.status(404).json({ error: "Run not found or already completed" });
+  }
+});
+
+// Recheck all stored hits in the database
+app.post("/api/recheck", async (req, res) => {
+  try {
+    const { proxies: proxyText, config: userConfig, threads } = req.body as {
+      proxies?: string;
+      config?: Partial<AppConfig>;
+      threads?: number;
+    };
+
+    const config = userConfig ? mergeConfig(DEFAULT_CONFIG, userConfig) : DEFAULT_CONFIG;
+    const proxies = proxyText ? parseProxies(proxyText) : [];
+    const threadCount = Math.min(Math.max(threads || 30, 1), 300);
+    const runId = crypto.randomUUID();
+
+    // Fetch all stored hits with cookie content
+    const totalHits = await countAllHitsResults();
+    if (totalHits === 0) {
+      res.status(400).json({ error: "No stored hits to recheck" });
+      return;
+    }
+
+    const storedHits = await getAllHitsResults(5000, 0);
+
+    // Create DB run record for the recheck
+    await createRun(runId, storedHits.length, config).catch(() => {});
+
+    const abortController = new AbortController();
+    activeRuns.set(runId, abortController);
+
+    // Build cookie list from stored hit results
+    const cookies = storedHits.map((r) => ({ name: r.email || `result_${r.id}`, content: r.cookie_content! }));
+
+    // Use the existing runCheck with stored cookie content
+    runCheck({
+      config,
+      cookies,
+      proxies,
+      threadCount,
+      runId,
+      signal: abortController.signal,
+      onProgress: (update) => {
+        sendSse(runId, update);
+      },
+    })
+      .then(() => {
+        activeRuns.delete(runId);
+      })
+      .catch((err) => {
+        console.error(`Recheck ${runId} error:`, err);
+        activeRuns.delete(runId);
+        sendSse(runId, { type: "error", runId, message: String(err?.message || err) });
+      });
+
+    res.json({ runId, total: storedHits.length, threads: threadCount, recheck: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to start recheck" });
+  }
+});
+
+// Get count of stored hits available for recheck
+app.get("/api/recheck/count", async (_req, res) => {
+  try {
+    const count = await countAllHitsResults();
+    res.json({ count });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to count hits" });
   }
 });
 

@@ -1,27 +1,34 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ScanLine, TrendingUp, CheckCircle2, XCircle, Copy, AlertCircle, Clock, Activity } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { ScanLine, TrendingUp, CheckCircle2, XCircle, Copy, AlertCircle, Clock, Activity, RefreshCw, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { getStats, checkHealth, type RunRecord } from "@/lib/api";
+import { getStats, checkHealth, getRecheckCount, recheckHits, getDefaultConfig, subscribeToRun, type RunRecord } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [health, setHealth] = useState<{ status: string; database: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [recheckCount, setRecheckCount] = useState<number | null>(null);
+  const [isRechecking, setIsRechecking] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
-        const [s, h] = await Promise.all([
+        const [s, h, rc] = await Promise.all([
           getStats().catch(() => null),
           checkHealth().catch(() => null),
+          getRecheckCount().catch(() => null),
         ]);
         setStats(s);
         setHealth(h);
+        if (rc) setRecheckCount(rc.count);
       } finally {
         setLoading(false);
       }
@@ -30,6 +37,44 @@ export default function Dashboard() {
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  const handleRecheck = async () => {
+    if (recheckCount === 0) {
+      toast.error("No stored hits to recheck");
+      return;
+    }
+    setIsRechecking(true);
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const result = await recheckHits("", config, 30);
+      toast.success(`Recheck started: ${result.total} stored hits`);
+
+      const es = subscribeToRun(result.runId, (update) => {
+        if (update.type === "complete") {
+          setIsRechecking(false);
+          toast.success("Recheck completed!", {
+            description: `${update.counts?.hits || 0} hits, ${update.counts?.free || 0} free, ${update.counts?.bad || 0} bad`,
+          });
+          es.close();
+          navigate(`/runs/${result.runId}`);
+        } else if (update.type === "error") {
+          setIsRechecking(false);
+          toast.error(update.message || "Recheck failed");
+          es.close();
+        }
+      });
+      eventSourceRef.current = es;
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start recheck");
+      setIsRechecking(false);
+    }
+  };
 
   const totalChecked = stats?.totalResults || 0;
   const totalHits = stats?.statusBreakdown?.find((s: any) => s.status === "success")?.count || 0;
@@ -47,12 +92,27 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground mt-1">Monitor your Netflix cookie checking operations</p>
         </div>
-        <Link to="/checker">
-          <Button className="bg-primary hover:bg-primary/90 glow-red">
-            <ScanLine className="h-4 w-4 mr-2" />
-            Start New Check
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleRecheck}
+            variant="outline"
+            disabled={isRechecking || recheckCount === 0}
+            className="relative"
+          >
+            {isRechecking ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-2" />
+            )}
+            {isRechecking ? "Rechecking..." : `Recheck All Hits${recheckCount !== null ? ` (${recheckCount})` : ""}`}
           </Button>
-        </Link>
+          <Link to="/checker">
+            <Button className="bg-primary hover:bg-primary/90 glow-red">
+              <ScanLine className="h-4 w-4 mr-2" />
+              Start New Check
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Health Status */}

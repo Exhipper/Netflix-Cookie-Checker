@@ -1,21 +1,26 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, CheckCircle2, XCircle, Copy, AlertTriangle, Download, Clock, Globe, Mail } from "lucide-react";
+import { ArrowLeft, CheckCircle2, XCircle, Copy, AlertTriangle, Download, Clock, Globe, Mail, RefreshCw, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getRun, getRunResults, type RunRecord, type ResultRecord } from "@/lib/api";
+import { getRun, getRunResults, recheckHits, getDefaultConfig, subscribeToRun, type RunRecord, type ResultRecord } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "react-router-dom";
+import { useRef } from "react";
 
 export default function RunDetail() {
   const { runId } = useParams<{ runId: string }>();
+  const navigate = useNavigate();
   const [run, setRun] = useState<RunRecord | null>(null);
   const [results, setResults] = useState<ResultRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [isRechecking, setIsRechecking] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!runId) return;
@@ -42,6 +47,40 @@ export default function RunDetail() {
   }, [runId, statusFilter]);
 
   const filteredResults = results;
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  const handleRecheckThisRun = async () => {
+    if (!runId) return;
+    setIsRechecking(true);
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const result = await recheckHits("", config, 30);
+      toast.success(`Recheck started: ${result.total} stored hits`);
+      const es = subscribeToRun(result.runId, (update) => {
+        if (update.type === "complete") {
+          setIsRechecking(false);
+          toast.success("Recheck completed!", {
+            description: `${update.counts?.hits || 0} hits, ${update.counts?.free || 0} free, ${update.counts?.bad || 0} bad`,
+          });
+          es.close();
+          navigate(`/runs/${result.runId}`);
+        } else if (update.type === "error") {
+          setIsRechecking(false);
+          toast.error(update.message || "Recheck failed");
+          es.close();
+        }
+      });
+      eventSourceRef.current = es;
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start recheck");
+      setIsRechecking(false);
+    }
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -87,10 +126,25 @@ export default function RunDetail() {
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto animate-fade-in">
-      <Link to="/history" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-6">
-        <ArrowLeft className="h-4 w-4" />
-        Back to History
-      </Link>
+      <div className="flex items-center justify-between mb-6">
+        <Link to="/history" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" />
+          Back to History
+        </Link>
+        <Button
+          onClick={handleRecheckThisRun}
+          variant="outline"
+          size="sm"
+          disabled={isRechecking}
+        >
+          {isRechecking ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4 mr-2" />
+          )}
+          {isRechecking ? "Rechecking..." : "Recheck All Hits"}
+        </Button>
+      </div>
 
       {/* Run Header */}
       <div className="mb-8">
@@ -260,7 +314,7 @@ function ResultCard({
                 {result.email}
               </div>
             )}
-            {result.reason && !result.email && (
+            {result.reason && (
               <div className="text-xs text-red-400 mt-0.5">{result.reason}</div>
             )}
           </div>
