@@ -22,12 +22,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import {
   getStats,
   checkHealth,
@@ -466,7 +466,15 @@ function AccountModal({
   if (!account) return null;
 
   const result = account.result;
-  const info = result.accountInfo || {};
+  // Merge result-level fields into accountInfo so the modal always has basics
+  const info: Record<string, any> = {
+    ...(result.accountInfo || {}),
+    email: result.accountInfo?.email || result.email || result.accountInfo?.accountEmail || undefined,
+    countryOfSignup: result.accountInfo?.countryOfSignup || result.country || undefined,
+    localizedPlanName: result.accountInfo?.localizedPlanName || result.planName || undefined,
+    planKey: result.planKey || result.accountInfo?.planKey || undefined,
+    status: result.status || undefined,
+  };
   const isLive = result.isLive;
 
   const copyToClipboard = (text: string) => {
@@ -474,8 +482,8 @@ function AccountModal({
     toast.success("Copied to clipboard");
   };
 
-  // Account fields to display with friendly labels and fallback values
-  const accountFields = [
+  // All fields we want to display with friendly labels
+  const allFields = [
     { key: "accountOwnerName", label: "Name" },
     { key: "email", label: "Email" },
     { key: "countryOfSignup", label: "Country" },
@@ -491,149 +499,168 @@ function AccountModal({
     { key: "holdStatus", label: "Hold Status" },
     { key: "emailVerified", label: "Email Verified" },
     { key: "profilesDisplay", label: "Profiles" },
+    { key: "profiles", label: "Profiles" },
     { key: "userGuid", label: "User GUID" },
   ];
 
-  const visibleFields = accountFields.filter((f) => {
-    const value = info[f.key];
-    return value !== null && value !== undefined && value !== "" && value !== "null";
-  });
+  const visibleFields = allFields
+    .map((f) => ({ ...f, value: info[f.key] }))
+    .filter((f) => {
+      const value = f.value;
+      return value !== null && value !== undefined && value !== "" && value !== "null";
+    });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] max-w-2xl h-[90vh] sm:h-auto sm:max-h-[90vh] p-0 gap-0 overflow-hidden">
-        <div className="flex flex-col h-full">
-          <DialogHeader className="px-4 pt-5 pb-3 sm:px-6 border-b">
-            <DialogTitle className="flex items-center gap-2 text-lg sm:text-xl">
-              <Sparkles className="h-5 w-5 text-primary shrink-0" />
-              Generated Account
-            </DialogTitle>
-            <DialogDescription className="text-xs sm:text-sm">
-              Account generated from stored hit database and rechecked for liveness
-            </DialogDescription>
-          </DialogHeader>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="bottom"
+        className="w-full h-[92dvh] max-h-[92dvh] sm:h-[85vh] sm:max-w-2xl sm:mx-auto sm:rounded-t-xl rounded-t-2xl p-0 gap-0 overflow-hidden flex flex-col"
+      >
+        <SheetHeader className="px-4 pt-5 pb-3 sm:px-6 border-b shrink-0">
+          <SheetTitle className="flex items-center gap-2 text-lg sm:text-xl text-left">
+            <Sparkles className="h-5 w-5 text-primary shrink-0" />
+            Generated Account
+          </SheetTitle>
+          <SheetDescription className="text-xs sm:text-sm text-left">
+            Account generated from stored hit database and rechecked for liveness
+          </SheetDescription>
+        </SheetHeader>
 
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="p-4 sm:p-6 space-y-5">
-              {/* Live Status Banner */}
-              <div className={cn(
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-4 sm:p-6 space-y-5">
+            {/* Live Status Banner */}
+            <div
+              className={cn(
                 "flex items-center gap-3 rounded-lg p-3 sm:p-4",
-                isLive ? "bg-green-500/10 border border-green-500/30" : "bg-red-500/10 border border-red-500/30"
-              )}>
-                {isLive ? (
-                  <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0" />
-                ) : (
-                  <XCircle className="h-6 w-6 text-red-500 shrink-0" />
-                )}
-                <div className="min-w-0">
-                  <div className={cn("font-semibold text-sm sm:text-base", isLive ? "text-green-500" : "text-red-500")}>
-                    {isLive ? "Account is LIVE" : "Account is NOT live"}
-                  </div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {result.status} {result.reason ? `— ${result.reason}` : ""}
-                  </div>
+                isLive
+                  ? "bg-green-500/10 border border-green-500/30"
+                  : "bg-red-500/10 border border-red-500/30"
+              )}
+            >
+              {isLive ? (
+                <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0" />
+              ) : (
+                <XCircle className="h-6 w-6 text-red-500 shrink-0" />
+              )}
+              <div className="min-w-0">
+                <div
+                  className={cn(
+                    "font-semibold text-sm sm:text-base",
+                    isLive ? "text-green-500" : "text-red-500"
+                  )}
+                >
+                  {isLive ? "Account is LIVE" : "Account is NOT live"}
+                </div>
+                <div className="text-xs text-muted-foreground truncate">
+                  {result.status} {result.reason ? `— ${result.reason}` : ""}
                 </div>
               </div>
+            </div>
 
-              {/* Account Info Grid */}
-              {visibleFields.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                  {visibleFields.map((f) => (
-                    <InfoRow key={f.key} label={f.label} value={String(info[f.key])} />
+            {/* Account Info List */}
+            {visibleFields.length > 0 ? (
+              <div className="space-y-1">
+                {visibleFields.map((f) => (
+                  <InfoRow key={f.key} label={f.label} value={String(f.value)} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                No detailed account info available from the recheck.
+              </div>
+            )}
+
+            {/* NFToken Redirect Buttons */}
+            {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Zap className="h-4 w-4 text-primary shrink-0" />
+                  NFToken Login Links
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {result.nfTokenLinks.map(([label, url]) => (
+                    <a
+                      key={label}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block"
+                    >
+                      <Button variant="outline" className="w-full justify-start h-11 text-sm">
+                        <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
+                        {label}
+                      </Button>
+                    </a>
                   ))}
                 </div>
-              ) : (
-                <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                  No detailed account info available from the recheck.
-                </div>
-              )}
+                {result.nfTokenData?.expires_at_utc && (
+                  <p className="text-xs text-muted-foreground">
+                    NFToken expires: {result.nfTokenData.expires_at_utc}
+                  </p>
+                )}
+              </div>
+            )}
 
-              {/* NFToken Redirect Buttons */}
-              {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Zap className="h-4 w-4 text-primary shrink-0" />
-                    NFToken Login Links
-                  </div>
-                  <div className="grid grid-cols-1 gap-2">
-                    {result.nfTokenLinks.map(([label, url]) => (
-                      <a key={label} href={url} target="_blank" rel="noopener noreferrer" className="block">
-                        <Button variant="outline" className="w-full justify-start h-11 text-sm">
-                          <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
-                          {label}
-                        </Button>
-                      </a>
-                    ))}
-                  </div>
-                  {result.nfTokenData?.expires_at_utc && (
-                    <p className="text-xs text-muted-foreground">
-                      NFToken expires: {result.nfTokenData.expires_at_utc}
-                    </p>
-                  )}
+            {/* Cookie Content */}
+            {result.cookieContent && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium">Cookie Content</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-xs"
+                    onClick={() => copyToClipboard(result.cookieContent || "")}
+                  >
+                    <Copy className="h-3 w-3 mr-1" />
+                    Copy
+                  </Button>
                 </div>
-              )}
+                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-40 sm:max-h-48 font-mono">
+                  {result.cookieContent}
+                </pre>
+              </div>
+            )}
 
-              {/* Cookie Content */}
-              {result.cookieContent && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium">Cookie Content</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-8 text-xs"
-                      onClick={() => copyToClipboard(result.cookieContent || "")}
-                    >
-                      <Copy className="h-3 w-3 mr-1" />
-                      Copy
-                    </Button>
-                  </div>
-                  <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-40 sm:max-h-48 font-mono">
-                    {result.cookieContent}
-                  </pre>
+            {/* Formatted Output */}
+            {result.formattedOutput && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium">Formatted Output</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-xs"
+                    onClick={() => copyToClipboard(result.formattedOutput || "")}
+                  >
+                    <Copy className="h-3 w-3 mr-1" />
+                    Copy
+                  </Button>
                 </div>
-              )}
-
-              {/* Formatted Output */}
-              {result.formattedOutput && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium">Formatted Output</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-8 text-xs"
-                      onClick={() => copyToClipboard(result.formattedOutput || "")}
-                    >
-                      <Copy className="h-3 w-3 mr-1" />
-                      Copy
-                    </Button>
-                  </div>
-                  <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-48 sm:max-h-64 font-mono">
-                    {result.formattedOutput}
-                  </pre>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-
-          {/* Footer close button for mobile friendliness */}
-          <div className="border-t p-3 sm:p-4 sm:hidden">
-            <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
-              Close
-            </Button>
+                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-48 sm:max-h-64 font-mono">
+                  {result.formattedOutput}
+                </pre>
+              </div>
+            )}
           </div>
+        </ScrollArea>
+
+        {/* Footer close button */}
+        <div className="border-t p-3 sm:p-4 shrink-0">
+          <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-border/50 py-2 gap-0.5 sm:gap-2">
-      <span className="text-muted-foreground text-xs shrink-0">{label}</span>
-      <span className="font-medium text-sm text-right break-all">{String(value)}</span>
+    <div className="flex flex-col border-b border-border/50 py-2.5 gap-0.5">
+      <span className="text-muted-foreground text-xs">{label}</span>
+      <span className="font-medium text-sm text-foreground break-words">{String(value)}</span>
     </div>
   );
 }

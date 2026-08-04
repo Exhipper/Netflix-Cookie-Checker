@@ -431,6 +431,27 @@ export async function getResultById(id: number): Promise<ResultRecord | null> {
   return (result.rows[0] as ResultRecord) || null;
 }
 
+/** Get the latest stored result by email (success/free only). */
+export async function getLatestResultByEmail(email: string): Promise<ResultRecord | null> {
+  const pool = getPool();
+  const normalized = email.trim().toLowerCase();
+  const result = await pool.query(
+    `SELECT * FROM results WHERE email = $1 AND status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 1`,
+    [normalized]
+  );
+  return (result.rows[0] as ResultRecord) || null;
+}
+
+/** Get the latest stored result by cookie content hash match. */
+export async function getLatestResultByCookieContent(content: string): Promise<ResultRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM results WHERE cookie_content = $1 AND status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 1`,
+    [content]
+  );
+  return (result.rows[0] as ResultRecord) || null;
+}
+
 export async function getStats(): Promise<any> {
   const pool = getPool();
   const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);

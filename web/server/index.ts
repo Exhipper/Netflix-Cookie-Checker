@@ -22,6 +22,8 @@ import {
   getHitLogs,
   countHits,
   getResultById,
+  getLatestResultByEmail,
+  getLatestResultByCookieContent,
   onDashboardUpdate,
   notifyDashboardUpdate,
 } from "./db.js";
@@ -343,12 +345,36 @@ app.post("/api/generate-account", async (req, res) => {
       return;
     }
 
-    // Merge stored account info with recheck info so the modal always has data
-    const mergedAccountInfo = { ...storedAccountInfo, ...(checkResult.accountInfo || {}) };
+    // Merge stored account info with recheck info so the modal always has data.
+    // If the recheck didn't carry accountInfo, fetch the latest saved DB row for this account.
+    let recheckAccountInfo = checkResult.accountInfo || {};
+    if (!recheckAccountInfo || Object.keys(recheckAccountInfo).length === 0) {
+      const savedResult =
+        (checkResult.email && (await getLatestResultByEmail(checkResult.email))) ||
+        (randomHit.email && (await getLatestResultByEmail(randomHit.email))) ||
+        (await getLatestResultByCookieContent(randomHit.cookie_content!));
+      if (savedResult?.account_info) {
+        recheckAccountInfo = savedResult.account_info as Record<string, any>;
+      }
+    }
+
+    const mergedAccountInfo = { ...storedAccountInfo, ...recheckAccountInfo };
     // Ensure email/country/plan from the recheck or stored data are present
-    if (!mergedAccountInfo.email && randomHit.email) mergedAccountInfo.email = randomHit.email;
-    if (!mergedAccountInfo.countryOfSignup && randomHit.country) mergedAccountInfo.countryOfSignup = randomHit.country;
-    if (!mergedAccountInfo.localizedPlanName && randomHit.plan_name) mergedAccountInfo.localizedPlanName = randomHit.plan_name;
+    if (!mergedAccountInfo.email && (checkResult.email || randomHit.email)) {
+      mergedAccountInfo.email = checkResult.email || randomHit.email;
+    }
+    if (!mergedAccountInfo.countryOfSignup && (checkResult.country || randomHit.country)) {
+      mergedAccountInfo.countryOfSignup = checkResult.country || randomHit.country;
+    }
+    if (!mergedAccountInfo.localizedPlanName && (checkResult.planName || randomHit.plan_name)) {
+      mergedAccountInfo.localizedPlanName = checkResult.planName || randomHit.plan_name;
+    }
+    if (!mergedAccountInfo.planKey && (checkResult.planKey || randomHit.plan_key)) {
+      mergedAccountInfo.planKey = checkResult.planKey || randomHit.plan_key;
+    }
+    if (!mergedAccountInfo.membershipStatus && (checkResult.status || randomHit.status)) {
+      mergedAccountInfo.membershipStatus = checkResult.status === "success" ? "Active" : (checkResult.status === "free" ? "Free" : (checkResult.status || randomHit.status));
+    }
 
     // Build nftoken links - prefer fresh token, fall back to stored token
     let nfTokenData = checkResult.nfTokenData || randomHit.nftoken_data || null;
@@ -372,7 +398,7 @@ app.post("/api/generate-account", async (req, res) => {
         onHold: checkResult.onHold,
         accountInfo: mergedAccountInfo,
         cookieContent: checkResult.cookieContent || randomHit.cookie_content || undefined,
-        formattedOutput: checkResult.formattedOutput,
+        formattedOutput: checkResult.formattedOutput || randomHit.formatted_output || undefined,
         nfTokenData: nfTokenData,
         nfTokenLinks,
         isLive,
