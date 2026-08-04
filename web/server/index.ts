@@ -47,6 +47,12 @@ import {
   cleanupStaleHits,
   type HealthMonitorOptions,
 } from "./health-monitor.js";
+import {
+  startProxyAutoFetch,
+  stopProxyAutoFetch,
+  getProxyPoolStatus,
+  refreshProxies,
+} from "./proxy-manager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -439,6 +445,7 @@ app.post("/api/generate-account", async (req, res) => {
         nfTokenData: nfTokenData,
         nfTokenLinks,
         isLive,
+        proxyIp: checkResult.proxyIp || null,
       },
     });
   } catch (err: any) {
@@ -515,6 +522,7 @@ app.post("/api/recheck/:id", async (req, res) => {
       status: checkResult.status,
       reason: checkResult.reason,
       autoDeleted: !isLive && autoDelete,
+      proxyIp: checkResult.proxyIp || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || "Failed to recheck hit" });
@@ -758,6 +766,23 @@ app.post("/api/health-monitor/run-now", async (req, res) => {
   }
 });
 
+// ---- Proxy Management ----
+
+// Get proxy pool status
+app.get("/api/proxies/status", (_req, res) => {
+  res.json(getProxyPoolStatus());
+});
+
+// Force refresh proxies
+app.post("/api/proxies/refresh", async (_req, res) => {
+  try {
+    const result = await refreshProxies();
+    res.json({ ...result, message: `Fetched ${result.fetched} proxies, ${result.alive} alive` });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to refresh proxies" });
+  }
+});
+
 // Serve static files in production
 // Server is compiled to web/dist/server/index.js, so the frontend build is at web/dist/
 const distPath = path.resolve(__dirname, "..");
@@ -780,6 +805,10 @@ async function start() {
   } catch (err) {
     console.warn("Database initialization failed (will retry on first query):", err);
   }
+
+  // Start proxy auto-fetch on boot so validated proxies are always available
+  startProxyAutoFetch();
+  console.log("Proxy auto-fetch started — fetching from monosans/proxy-list");
 
   // Start auto-health monitor with defaults from environment
   const monitorEnabled = process.env.HEALTH_MONITOR_ENABLED === "true";

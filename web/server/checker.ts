@@ -23,6 +23,7 @@ import { createNfToken, hasUsableNfToken } from "./nftoken.js";
 import { getNfTokenMode, formatCookieFile, sendNotifications } from "./notifications.js";
 import { describeHttpError } from "./utils.js";
 import { parseProxies } from "./proxy.js";
+import { fetchThroughProxy, getNextProxy, markProxyFailed, markProxySuccess, fetchAndValidateProxies, getProxyPoolStatus } from "./proxy-manager.js";
 import { saveResult, updateResult, updateRunStats } from "./db.js";
 
 const RETRYABLE_STATUS_CODES = new Set([403, 429, 500, 502, 503, 504]);
@@ -176,7 +177,7 @@ async function fetchAccountPage(
   proxy: ProxyEntry | null,
   timeout: number,
   signal?: AbortSignal
-): Promise<{ text: string; status: number; info: AccountInfo | null }> {
+): Promise<{ text: string; status: number; info: AccountInfo | null; proxyIp: string | null }> {
   const headers: Record<string, string> = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -187,42 +188,22 @@ async function fetchAccountPage(
   };
 
   const url = "https://www.netflix.com/account/membership";
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout * 1000);
 
-    // Combine abort signals
-    if (signal) {
-      signal.addEventListener("abort", () => controller.abort(), { once: true });
-    }
+  // Use the proxy manager's fetchThroughProxy which automatically rotates proxies
+  const result = await fetchThroughProxy(url, {
+    headers,
+    timeoutMs: timeout * 1000,
+    signal,
+    maxProxyRetries: 3,
+  });
 
-    const proxyUrl = proxy?.https;
-    const fetchOptions: RequestInit = {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-      redirect: "manual",
-    };
+  const { text, status, proxyIp } = result;
 
-    // Note: Node.js fetch doesn't natively support proxies.
-    // We use a custom agent if available, or skip proxy for now.
-    // In production with Render, proxy support can be added via undici ProxyAgent.
-    const response = await fetch(url, fetchOptions);
-    clearTimeout(timeoutId);
-
-    const text = await response.text();
-    const status = response.status;
-    if (status === 200 && text) {
-      const info = extractInfo(text);
-      return { text, status, info };
-    }
-    return { text, status, info: null };
-  } catch (err: any) {
-    if (err?.name === "AbortError") {
-      return { text: "", status: 0, info: null };
-    }
-    throw err;
+  if (status === 200 && text) {
+    const info = extractInfo(text);
+    return { text, status, info, proxyIp };
   }
+  return { text, status, info: null, proxyIp };
 }
 
 async function processTask(
@@ -257,27 +238,17 @@ async function processTask(
   let statusCode: number | null = null;
   let extractedInfo: AccountInfo | null = null;
   let lastError: Error | null = null;
-  const usedProxyIndices = new Set<number>();
-  const proxies = options.proxies;
+  let usedProxyIp: string | null = null;
 
   for (let attempt = 0; attempt < maxRetryAttempts; attempt++) {
     if (ctx.cancelled) break;
 
-    // Get next proxy
-    let proxy: ProxyEntry | null = null;
-    if (proxies.length) {
-      const available = proxies.map((_, i) => i).filter((i) => !usedProxyIndices.has(i));
-      const candidates = available.length ? available : proxies.map((_, i) => i);
-      const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-      usedProxyIndices.add(chosen);
-      proxy = proxies[chosen];
-    }
-
     try {
-      const result = await fetchAccountPage(cookies, proxy, requestTimeout, ctx.abortController.signal);
+      const result = await fetchAccountPage(cookies, null, requestTimeout, ctx.abortController.signal);
       responseText = result.text;
       statusCode = result.status;
       extractedInfo = result.info;
+      usedProxyIp = result.proxyIp;
 
       if (statusCode === 200 && responseText) {
         if (retryIncompleteInfo && attempt < maxRetryAttempts - 1) {
@@ -342,6 +313,7 @@ async function processTask(
           cookieContent: netscapeContent,
           formattedOutput: formatted,
           nfTokenData,
+          proxyIp: usedProxyIp,
         };
       }
       ctx.processedEmails.add(dupKey);
@@ -374,9 +346,10 @@ async function processTask(
         cookieContent: netscapeContent,
         formattedOutput: formatted,
         nfTokenData,
+        proxyIp: usedProxyIp,
       };
     } else {
-      return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, info) };
+      return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, info), proxyIp: usedProxyIp };
     }
   } else if (lastError || (statusCode && RETRYABLE_STATUS_CODES.has(statusCode))) {
     let reason: string;
@@ -387,9 +360,9 @@ async function processTask(
     } else {
       reason = "proxy error";
     }
-    return { status: "error" as CheckStatus, reason };
+    return { status: "error" as CheckStatus, reason, proxyIp: usedProxyIp };
   } else {
-    return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, extractedInfo) };
+    return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, extractedInfo), proxyIp: usedProxyIp };
   }
 }
 
@@ -520,6 +493,7 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
           cookieContent: result.cookieContent,
           formattedOutput: result.formattedOutput,
           nfTokenData: result.nfTokenData,
+          proxyIp: result.proxyIp,
         });
       }
     }

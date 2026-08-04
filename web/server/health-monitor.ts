@@ -9,6 +9,7 @@ import {
   notifyDashboardUpdate,
 } from "./db.js";
 import { mergeConfig, DEFAULT_CONFIG } from "./config.js";
+import { fetchAndValidateProxies, getProxyPoolStatus } from "./proxy-manager.js";
 import type { AppConfig, ProgressUpdate } from "./types.js";
 
 export interface HealthMonitorOptions {
@@ -95,6 +96,13 @@ export async function runHealthCheck(
       errors: 0,
       completedAt: new Date().toISOString(),
     };
+  }
+
+  // Ensure proxies are available before running health checks
+  const poolStatus = getProxyPoolStatus();
+  if (poolStatus.alive === 0) {
+    console.log("[health-monitor] No alive proxies, fetching...");
+    await fetchAndValidateProxies().catch(() => {});
   }
 
   const hits = await getAllHitsResults(5000, 0);
@@ -184,6 +192,12 @@ export async function cleanupStaleHits(
     DEFAULT_CONFIG,
     { performance: { request_timeout_seconds: 20 } } as Partial<AppConfig>
   );
+
+  // Ensure proxies are available for stale cleanup too
+  const poolStatus = getProxyPoolStatus();
+  if (poolStatus.alive === 0) {
+    await fetchAndValidateProxies().catch(() => {});
+  }
 
   await createRun(runId, hits.length, config).catch(() => {});
 

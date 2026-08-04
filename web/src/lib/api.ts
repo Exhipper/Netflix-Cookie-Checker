@@ -31,6 +31,8 @@ export interface ProgressUpdate {
   formattedOutput?: string;
   nfTokenData?: { token: string; expires_at_utc: string } | null;
   message?: string;
+  /** IP address of the proxy used for this check, or null if direct. */
+  proxyIp?: string | null;
 }
 
 export interface RunRecord {
@@ -64,6 +66,7 @@ export interface ResultRecord {
   cookie_content: string | null;
   formatted_output: string | null;
   nftoken_data: any;
+  proxy_ip: string | null;
 }
 
 export interface GenerationHistoryRecord {
@@ -78,6 +81,7 @@ export interface GenerationHistoryRecord {
   email: string | null;
   reason: string | null;
   account_info: any;
+  proxy_ip: string | null;
 }
 
 export interface AppConfig {
@@ -435,5 +439,6 @@ export interface GeneratedAccount {
     nfTokenData?: { token: string; expires_at_utc: string } | null;
     nfTokenLinks?: Array<[string, string]>;
     isLive: boolean;
+    proxyIp?: string | null;
   };
 }

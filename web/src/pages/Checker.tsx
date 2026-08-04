@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Upload, FileText, X, Play, Square, Loader2, Settings2, Globe, Zap, CheckCircle2, XCircle, AlertTriangle, Copy } from "lucide-react";
+import { Upload, FileText, X, Play, Square, Loader2, Settings2, Globe, Zap, CheckCircle2, XCircle, AlertTriangle, Copy, Network } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -574,6 +574,12 @@ function ResultRow({ result }: { result: ProgressUpdate }) {
         )}
         {result.reason && (
           <div className="text-xs text-red-400">{result.reason}</div>
+        )}
+        {result.proxyIp && (
+          <div className="text-[10px] text-muted-foreground/70 flex items-center gap-1 mt-0.5">
+            <Network className="h-2.5 w-2.5 shrink-0" />
+            Proxy: {result.proxyIp}
+          </div>
         )}
       </div>
       {result.onHold && (

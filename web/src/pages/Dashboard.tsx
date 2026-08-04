@@ -21,6 +21,8 @@ import {
   History,
   Monitor,
   ChevronDown,
+  Network,
+  Wifi,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -92,12 +94,14 @@ export default function Dashboard() {
   const [healthMonitor, setHealthMonitor] = useState<{ running: boolean; intervalHours: number } | null>(null);
   const [isHealthCheckRunning, setIsHealthCheckRunning] = useState(false);
   const [recheckingHitId, setRecheckingHitId] = useState<number | null>(null);
+  const [proxyPool, setProxyPool] = useState<{ total: number; alive: number; dead: number; lastFetch: number | null; isFetching: boolean } | null>(null);
+  const [isRefreshingProxies, setIsRefreshingProxies] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardEventSourceRef = useRef<EventSource | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const [s, h, rc, cb, hl, fo, gh, st, hm] = await Promise.all([
+      const [s, h, rc, cb, hl, fo, gh, st, hm, pp] = await Promise.all([
         getStats().catch(() => null),
         checkHealth().catch(() => null),
         getRecheckCount().catch(() => null),
@@ -107,6 +111,7 @@ export default function Dashboard() {
         getGenerationHistory(10, 0).catch(() => ({ history: [], total: 0 })),
         getStaleHits(7).catch(() => ({ count: 0, days: 7 })),
         getHealthMonitorStatus().catch(() => ({ status: { running: false, intervalHours: 0 } })),
+        fetch(`${import.meta.env.VITE_API_BASE_URL || ""}/api/proxies/status`).then((r) => r.json()).catch(() => null),
       ]);
       setStats(s);
       setHealth(h);
@@ -119,6 +124,7 @@ export default function Dashboard() {
       setGenerationHistoryTotal((gh as any).total);
       setStaleHits(st as { count: number; days: number });
       setHealthMonitor((hm as any).status);
+      if (pp) setProxyPool(pp);
     } finally {
       setLoading(false);
     }
@@ -259,6 +265,22 @@ export default function Dashboard() {
     }
   };
 
+  const handleRefreshProxies = async () => {
+    setIsRefreshingProxies(true);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || ""}/api/proxies/refresh`, { method: "POST" });
+      const data = await res.json();
+      toast.success("Proxies refreshed", {
+        description: data.message || `${data.alive} alive out of ${data.fetched}`,
+      });
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to refresh proxies");
+    } finally {
+      setIsRefreshingProxies(false);
+    }
+  };
+
   const handleRunHealthCheckNow = async () => {
     setIsHealthCheckRunning(true);
     try {
@@ -340,6 +362,32 @@ export default function Dashboard() {
           <Cookie className="h-3 w-3" />
           Cookies Stored: {totalCookiesStored}
         </div>
+        {proxyPool && (
+          <div className={cn(
+            "flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium",
+            proxyPool.alive > 0 ? "bg-green-500/10 text-green-500" : "bg-yellow-500/10 text-yellow-500"
+          )}>
+            <Network className="h-3 w-3" />
+            Proxies: {proxyPool.alive} alive / {proxyPool.total}
+            {proxyPool.isFetching && <Loader2 className="h-3 w-3 animate-spin ml-1" />}
+          </div>
+        )}
+        {proxyPool && proxyPool.alive > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefreshProxies}
+            disabled={isRefreshingProxies}
+            className="h-7 px-2 text-xs"
+          >
+            {isRefreshingProxies ? (
+              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3 mr-1" />
+            )}
+            Refresh Proxies
+          </Button>
+        )}
         {staleCount > 0 && (
           <div className="flex items-center gap-2 rounded-full bg-yellow-500/10 px-3 py-1.5 text-xs font-medium text-yellow-500">
             <AlertCircle className="h-3 w-3" />
@@ -625,6 +673,12 @@ export default function Dashboard() {
                       {entry.email}
                     </div>
                   )}
+                  {entry.proxy_ip && (
+                    <div className="text-[10px] text-muted-foreground/70 flex items-center gap-1 mt-0.5">
+                      <Network className="h-2.5 w-2.5 shrink-0" />
+                      Proxy: {entry.proxy_ip}
+                    </div>
+                  )}
                 </div>
                 <div className="text-xs text-muted-foreground shrink-0">
                   {new Date(entry.generated_at).toLocaleString()}
@@ -745,6 +799,12 @@ function HitLogRow({
             {log.email}
           </div>
         )}
+        {log.proxy_ip && (
+          <div className="text-[10px] text-muted-foreground/70 flex items-center gap-1 mt-0.5">
+            <Network className="h-2.5 w-2.5 shrink-0" />
+            Proxy: {log.proxy_ip}
+          </div>
+        )}
       </div>
       <Button
         size="sm"
@@ -796,6 +856,8 @@ function AccountModal({
   // Remove fields the user asked to delete
   delete info.accountOwnerName;
   delete info.planKey;
+
+  const proxyIp = result.proxyIp || null;
 
   const planLabel = info.localizedPlanName || info.planKey || "Unknown";
   const country = info.countryOfSignup || "Unknown";
@@ -948,6 +1010,14 @@ function AccountModal({
                 </div>
               </div>
             </div>
+
+            {proxyIp && (
+              <div className="flex items-center gap-2 rounded-lg bg-secondary/50 p-2 border border-border/40">
+                <Network className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-[11px] text-muted-foreground">Checked via proxy:</span>
+                <span className="text-xs font-mono font-medium text-foreground">{proxyIp}</span>
+              </div>
+            )}
 
             {nfTokenLinks.length > 0 && (
               <div className="space-y-2">

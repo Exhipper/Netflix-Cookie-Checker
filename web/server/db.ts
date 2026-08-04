@@ -94,6 +94,32 @@ export async function initDatabase(): Promise<void> {
       END $$;
     `);
 
+    // Migrate: add proxy_ip column to results if missing
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'results' AND column_name = 'proxy_ip'
+        ) THEN
+          ALTER TABLE results ADD COLUMN proxy_ip TEXT;
+        END IF;
+      END $$;
+    `);
+
+    // Migrate: add proxy_ip column to generation_history if missing
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'generation_history' AND column_name = 'proxy_ip'
+        ) THEN
+          ALTER TABLE generation_history ADD COLUMN proxy_ip TEXT;
+        END IF;
+      END $$;
+    `);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS generation_history (
         id SERIAL PRIMARY KEY,
@@ -204,6 +230,7 @@ export interface ResultRecord {
   cookie_content: string | null;
   formatted_output: string | null;
   nftoken_data: any;
+  proxy_ip: string | null;
 }
 
 export interface GenerationHistoryRecord {
@@ -218,6 +245,7 @@ export interface GenerationHistoryRecord {
   email: string | null;
   reason: string | null;
   account_info: any;
+  proxy_ip: string | null;
 }
 
 import type { CheckResult, RunStats } from "./types.js";
@@ -245,8 +273,8 @@ export async function saveResult(
   // For hits with an email, upsert so the same account is stored only once.
   if (isHit && email) {
     await pool.query(
-      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, checked_at, last_verified_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, proxy_ip, checked_at, last_verified_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
        ON CONFLICT (email) WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
        DO UPDATE SET
          run_id = EXCLUDED.run_id,
@@ -260,6 +288,7 @@ export async function saveResult(
          cookie_content = EXCLUDED.cookie_content,
          formatted_output = EXCLUDED.formatted_output,
          nftoken_data = EXCLUDED.nftoken_data,
+         proxy_ip = EXCLUDED.proxy_ip,
          checked_at = NOW(),
          last_verified_at = NOW()`,
       [
@@ -275,12 +304,13 @@ export async function saveResult(
         result.cookieContent || null,
         result.formattedOutput || null,
         result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+        result.proxyIp || null,
       ]
     );
   } else {
     await pool.query(
-      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, proxy_ip)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         runId,
         result.status,
@@ -294,6 +324,7 @@ export async function saveResult(
         result.cookieContent || null,
         result.formattedOutput || null,
         result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+        result.proxyIp || null,
       ]
     );
   }
@@ -383,8 +414,8 @@ export async function updateResult(
   const pool = getPool();
   await pool.query(
     `UPDATE results SET status = $1, plan_key = $2, plan_name = $3, country = $4, email = $5, reason = $6,
-     on_hold = $7, account_info = $8, formatted_output = $9, nftoken_data = $10, checked_at = NOW(), last_verified_at = NOW()
-     WHERE id = $11`,
+     on_hold = $7, account_info = $8, formatted_output = $9, nftoken_data = $10, proxy_ip = $11, checked_at = NOW(), last_verified_at = NOW()
+     WHERE id = $12`,
     [
       result.status,
       result.planKey || null,
@@ -396,6 +427,7 @@ export async function updateResult(
       result.accountInfo ? JSON.stringify(result.accountInfo) : null,
       result.formattedOutput || null,
       result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+      result.proxyIp || null,
       resultId,
     ]
   );
@@ -586,8 +618,8 @@ export async function recordGeneration(
   const pool = getPool();
   const isLive = result.status === "success" || result.status === "free";
   await pool.query(
-    `INSERT INTO generation_history (result_id, was_live, status, plan_key, plan_name, country, email, reason, account_info)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    `INSERT INTO generation_history (result_id, was_live, status, plan_key, plan_name, country, email, reason, account_info, proxy_ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       resultId,
       isLive,
@@ -598,6 +630,7 @@ export async function recordGeneration(
       result.email || null,
       result.reason || null,
       result.accountInfo ? JSON.stringify(result.accountInfo) : null,
+      result.proxyIp || null,
     ]
   );
   notifyDashboardUpdate();

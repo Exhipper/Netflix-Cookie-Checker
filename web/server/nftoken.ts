@@ -1,5 +1,6 @@
 import type { NfTokenData } from "./types.js";
 import { decodeValue } from "./utils.js";
+import { fetchThroughProxy } from "./proxy-manager.js";
 
 const NFTOKEN_API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48";
 const NFTOKEN_QUERY_PARAMS: Record<string, string> = {
@@ -80,8 +81,7 @@ export function hasUsableNfToken(data: NfTokenData | null | undefined): boolean 
 
 export async function createNfToken(
   cookieDict: Record<string, string>,
-  attempts = 1,
-  fetchFn: typeof fetch = fetch
+  attempts = 1
 ): Promise<[NfTokenData | null, string | null]> {
   const netflixId = decodeValue(cookieDict["NetflixId"]);
   if (!netflixId) return [null, "Missing required cookies for NFToken"];
@@ -97,20 +97,21 @@ export async function createNfToken(
         url.searchParams.set(key, val);
       }
 
-      const response = await fetchFn(url.toString(), {
-        method: "GET",
+      // Route through proxy manager to avoid 403/rate limits
+      const { text, status } = await fetchThroughProxy(url.toString(), {
         headers,
-        signal: AbortSignal.timeout(30000),
+        timeoutMs: 30000,
+        maxProxyRetries: 3,
       });
 
-      if (response.status !== 200) {
-        if (response.status === 403) lastError = "403";
-        else if (response.status === 429) lastError = "429";
+      if (status !== 200) {
+        if (status === 403) lastError = "403";
+        else if (status === 429) lastError = "429";
         else lastError = "NFToken API error";
         continue;
       }
 
-      const data = await response.json() as any;
+      const data = JSON.parse(text) as any;
       const tokenData =
         ((data?.value?.account?.token?.default) || {});
       const token = decodeValue(tokenData.token);

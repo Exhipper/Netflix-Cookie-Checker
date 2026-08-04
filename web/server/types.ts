@@ -138,6 +138,8 @@ export interface CheckResult {
   cookieContent?: string;
   formattedOutput?: string;
   nfTokenData?: NfTokenData | null;
+  /** IP address of the proxy used for this check, or null if direct connection. */
+  proxyIp?: string | null;
 }
 
 export interface RunStats {
@@ -173,6 +175,8 @@ export interface ProgressUpdate {
   formattedOutput?: string;
   nfTokenData?: NfTokenData | null;
   message?: string;
+  /** IP address of the proxy used for this check, or null if direct. */
+  proxyIp?: string | null;
 }
 
 export interface ProxyEntry {
