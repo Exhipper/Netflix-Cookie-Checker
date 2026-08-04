@@ -225,9 +225,9 @@ app.get("/api/stats", async (_req, res) => {
 const distPath = path.resolve(__dirname, "../dist");
 app.use(express.static(distPath));
 
-// Catch-all for SPA routing
-app.get("*", (req, res, next) => {
-  if (req.path.startsWith("/api/")) {
+// Catch-all for SPA routing (Express 5 compatible)
+app.use((req, res, next) => {
+  if (req.method !== "GET" || req.path.startsWith("/api/")) {
     next();
     return;
   }
