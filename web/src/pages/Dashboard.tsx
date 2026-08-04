@@ -239,6 +239,23 @@ export default function Dashboard() {
     }
   };
 
+  const handleRecheckAnother = async () => {
+    const excludeId = generatedAccount?.storedHitId;
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const result = await generateAccount("", config, 30, excludeId);
+      setGeneratedAccount(result);
+      if (result.result.isLive) {
+        toast.success("Another account is live", { description: result.result.email || result.result.planName });
+      } else {
+        toast.warning("Account not live", { description: result.result.reason || "Dead" });
+      }
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to recheck another account");
+    }
+  };
+
   const handleCleanupStale = async () => {
     setIsCleaningStale(true);
     try {
@@ -701,7 +718,7 @@ export default function Dashboard() {
         open={showAccountModal}
         onOpenChange={setShowAccountModal}
         account={generatedAccount}
-        onRecheck={loadData}
+        onRecheckAnother={handleRecheckAnother}
       />
     </div>
   );
@@ -828,12 +845,12 @@ function AccountModal({
   open,
   onOpenChange,
   account,
-  onRecheck,
+  onRecheckAnother,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: GeneratedAccount | null;
-  onRecheck?: () => void;
+  onRecheckAnother?: () => Promise<void>;
 }) {
   const [isRechecking, setIsRechecking] = useState(false);
   if (!account) return null;
@@ -864,22 +881,10 @@ function AccountModal({
   const email = info.email || "Unknown";
 
   const handleRecheck = async () => {
-    if (!account.storedHitId) return;
+    if (!onRecheckAnother) return;
     setIsRechecking(true);
     try {
-      const config = await getDefaultConfig().catch(() => ({}));
-      const recheckResult = await recheckHit(account.storedHitId, "", config, 30, true);
-      if (recheckResult.isLive) {
-        toast.success("Account is still live", { description: email });
-      } else if (recheckResult.autoDeleted) {
-        toast.error("Account dead — deleted", { description: email });
-        onOpenChange(false);
-      } else {
-        toast.warning("Account dead", { description: recheckResult.reason || "Not live" });
-      }
-      onRecheck?.();
-    } catch (err: any) {
-      toast.error(err.message || "Recheck failed");
+      await onRecheckAnother();
     } finally {
       setIsRechecking(false);
     }
@@ -1075,7 +1080,7 @@ function AccountModal({
           variant="outline"
           className="w-full h-10 text-xs"
           onClick={handleRecheck}
-          disabled={isRechecking || !account.storedHitId}
+          disabled={isRechecking || !onRecheckAnother}
         >
           {isRechecking ? (
             <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />

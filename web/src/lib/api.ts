@@ -232,12 +232,13 @@ export async function getRecheckCount(): Promise<{ count: number }> {
 export async function generateAccount(
   proxies: string,
   config: Partial<AppConfig>,
-  threads: number
+  threads: number,
+  excludeId?: number
 ): Promise<GeneratedAccount> {
   const res = await fetch(`${API_BASE}/api/generate-account`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proxies, config, threads }),
+    body: JSON.stringify({ proxies, config, threads, excludeId }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Failed to generate account" }));

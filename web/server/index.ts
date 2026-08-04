@@ -301,10 +301,11 @@ app.get("/api/recheck/count", async (_req, res) => {
 // Generate a single account from a random stored hit, recheck it, and return full details
 app.post("/api/generate-account", async (req, res) => {
   try {
-    const { proxies: proxyText, config: userConfig, threads } = req.body as {
+    const { proxies: proxyText, config: userConfig, threads, excludeId } = req.body as {
       proxies?: string;
       config?: Partial<AppConfig>;
       threads?: number;
+      excludeId?: number;
     };
 
     const config = userConfig ? mergeConfig(DEFAULT_CONFIG, userConfig) : DEFAULT_CONFIG;
@@ -319,8 +320,16 @@ app.post("/api/generate-account", async (req, res) => {
     }
 
     const storedHits = await getAllHitsResults(5000, 0);
-    // Pick a random hit
-    const randomHit = storedHits[Math.floor(Math.random() * storedHits.length)];
+    let candidates = storedHits;
+    if (excludeId && storedHits.length > 1) {
+      candidates = storedHits.filter((h) => h.id !== excludeId);
+    }
+    if (candidates.length === 0) {
+      res.status(400).json({ error: "No other stored hits to generate from" });
+      return;
+    }
+    // Pick a random hit, excluding the current one when possible
+    const randomHit = candidates[Math.floor(Math.random() * candidates.length)];
     const storedAccountInfo = (randomHit.account_info || {}) as Record<string, any>;
 
     const runId = crypto.randomUUID();
