@@ -152,6 +152,13 @@ export function subscribeToRun(
   return es;
 }
 
+/** Check if a run is still active on the server (for reconnect support). */
+export async function getRunStatus(runId: string): Promise<{ active: boolean; progress: ProgressUpdate | null }> {
+  const res = await fetch(`${API_BASE}/api/check/${runId}/status`);
+  if (!res.ok) throw new Error("Failed to fetch run status");
+  return res.json();
+}
+
 export async function cancelRun(runId: string): Promise<void> {
   await fetch(`${API_BASE}/api/check/${runId}/cancel`, { method: "POST" });
 }
@@ -233,12 +240,14 @@ export async function generateAccount(
   proxies: string,
   config: Partial<AppConfig>,
   threads: number,
-  excludeId?: number
+  excludeId?: number,
+  country?: string,
+  plan?: string
 ): Promise<GeneratedAccount> {
   const res = await fetch(`${API_BASE}/api/generate-account`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proxies, config, threads, excludeId }),
+    body: JSON.stringify({ proxies, config, threads, excludeId, country, plan }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Failed to generate account" }));

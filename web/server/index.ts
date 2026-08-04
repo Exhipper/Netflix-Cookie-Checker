@@ -67,7 +67,14 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // Active SSE connections per run
 const sseClients = new Map<string, Set<express.Response>>();
 
+// Last known progress per run — sent immediately to reconnecting clients
+const lastProgress = new Map<string, ProgressUpdate>();
+
 function sendSse(runId: string, data: ProgressUpdate) {
+  // Store the latest progress/complete/error so reconnects get instant state
+  if (data.type === "progress" || data.type === "complete" || data.type === "error") {
+    lastProgress.set(runId, data);
+  }
   const clients = sseClients.get(runId);
   if (clients) {
     const message = `data: ${JSON.stringify(data)}\n\n`;
@@ -177,11 +184,14 @@ app.post("/api/check", async (req, res) => {
     })
       .then(() => {
         activeRuns.delete(runId);
+        // Clean up progress cache after 5 minutes
+        setTimeout(() => lastProgress.delete(runId), 5 * 60 * 1000);
       })
       .catch((err) => {
         console.error(`Run ${runId} error:`, err);
         activeRuns.delete(runId);
         sendSse(runId, { type: "error", runId, message: String(err?.message || err) });
+        setTimeout(() => lastProgress.delete(runId), 5 * 60 * 1000);
       });
 
     res.json({ runId, total: cookies.length, threads: threadCount });
@@ -203,6 +213,12 @@ app.get("/api/check/:runId/stream", (req, res) => {
 
   res.write("data: {\"type\":\"connected\",\"runId\":\"" + runId + "\"}\n\n");
 
+  // Send the last known progress to this client immediately (reconnect support)
+  const last = lastProgress.get(runId);
+  if (last) {
+    res.write(`data: ${JSON.stringify(last)}\n\n`);
+  }
+
   if (!sseClients.has(runId)) {
     sseClients.set(runId, new Set());
   }
@@ -213,6 +229,17 @@ app.get("/api/check/:runId/stream", (req, res) => {
     if (sseClients.get(runId)?.size === 0) {
       sseClients.delete(runId);
     }
+  });
+});
+
+// Get active run status (for checking if a run is still going)
+app.get("/api/check/:runId/status", (req, res) => {
+  const runId = req.params.runId;
+  const isActive = activeRuns.has(runId);
+  const last = lastProgress.get(runId);
+  res.json({
+    active: isActive,
+    progress: last || null,
   });
 });
 
@@ -275,11 +302,13 @@ app.post("/api/recheck", async (req, res) => {
     })
       .then(() => {
         activeRuns.delete(runId);
+        setTimeout(() => lastProgress.delete(runId), 5 * 60 * 1000);
       })
       .catch((err) => {
         console.error(`Recheck ${runId} error:`, err);
         activeRuns.delete(runId);
         sendSse(runId, { type: "error", runId, message: String(err?.message || err) });
+        setTimeout(() => lastProgress.delete(runId), 5 * 60 * 1000);
       });
 
     res.json({ runId, total: storedHits.length, threads: threadCount, recheck: true });
@@ -301,11 +330,13 @@ app.get("/api/recheck/count", async (_req, res) => {
 // Generate a single account from a random stored hit, recheck it, and return full details
 app.post("/api/generate-account", async (req, res) => {
   try {
-    const { proxies: proxyText, config: userConfig, threads, excludeId } = req.body as {
+    const { proxies: proxyText, config: userConfig, threads, excludeId, country, plan } = req.body as {
       proxies?: string;
       config?: Partial<AppConfig>;
       threads?: number;
       excludeId?: number;
+      country?: string;
+      plan?: string;
     };
 
     const config = userConfig ? mergeConfig(DEFAULT_CONFIG, userConfig) : DEFAULT_CONFIG;
@@ -321,8 +352,19 @@ app.post("/api/generate-account", async (req, res) => {
 
     const storedHits = await getAllHitsResults(5000, 0);
     let candidates = storedHits;
-    if (excludeId && storedHits.length > 1) {
-      candidates = storedHits.filter((h) => h.id !== excludeId);
+    // Filter by country if specified
+    if (country && country !== "all") {
+      candidates = candidates.filter((h) => h.country && h.country.toLowerCase() === country.toLowerCase());
+    }
+    // Filter by plan if specified
+    if (plan && plan !== "all") {
+      candidates = candidates.filter((h) =>
+        (h.plan_key && h.plan_key === plan) ||
+        (h.plan_name && h.plan_name.toLowerCase().includes(plan.toLowerCase()))
+      );
+    }
+    if (excludeId && candidates.length > 1) {
+      candidates = candidates.filter((h) => h.id !== excludeId);
     }
     if (candidates.length === 0) {
       res.status(400).json({ error: "No other stored hits to generate from" });

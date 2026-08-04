@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { getRun, getRunResults, recheckHits, getDefaultConfig, subscribeToRun, type RunRecord, type ResultRecord } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { getCountryFlag } from "@/lib/countryFlags";
 import { useNavigate } from "react-router-dom";
 import { useRef } from "react";
 
@@ -303,7 +304,11 @@ function ResultCard({
               )}
               {result.country && (
                 <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Globe className="h-3 w-3" />
+                  {getCountryFlag(result.country) ? (
+                    <span className="text-sm leading-none">{getCountryFlag(result.country)}</span>
+                  ) : (
+                    <Globe className="h-3 w-3" />
+                  )}
                   {result.country}
                 </span>
               )}
@@ -348,7 +353,7 @@ function ResultCard({
               <div className="grid grid-cols-2 gap-2 text-xs">
                 {info.accountOwnerName && <InfoRow label="Name" value={info.accountOwnerName} />}
                 {info.email && <InfoRow label="Email" value={info.email} />}
-                {info.countryOfSignup && <InfoRow label="Country" value={info.countryOfSignup} />}
+                {info.countryOfSignup && <InfoRow label="Country" value={`${getCountryFlag(info.countryOfSignup) ? getCountryFlag(info.countryOfSignup) + " " : ""}${info.countryOfSignup}`} />}
                 {info.localizedPlanName && <InfoRow label="Plan" value={info.localizedPlanName} />}
                 {info.planPrice && <InfoRow label="Price" value={info.planPrice} />}
                 {info.videoQuality && <InfoRow label="Quality" value={info.videoQuality} />}

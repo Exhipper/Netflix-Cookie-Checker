@@ -13,39 +13,47 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import {
-  startCheck,
-  subscribeToRun,
-  cancelRun,
   getDefaultConfig,
   type ProgressUpdate,
   type AppConfig,
 } from "@/lib/api";
+import { useCheckRun, type CookieFile } from "@/hooks/useCheckRun";
 import { cn } from "@/lib/utils";
-
-interface CookieFile {
-  name: string;
-  content: string;
-  size: number;
-}
+import { getCountryFlag } from "@/lib/countryFlags";
 
 export default function Checker() {
   const navigate = useNavigate();
+  const {
+    isRunning,
+    runId,
+    progress,
+    liveResults,
+    cookies: runCookies,
+    proxyText: runProxyText,
+    threads: runThreads,
+    config: runConfig,
+    error: runError,
+    start,
+    cancel,
+  } = useCheckRun();
+
+  // Local UI state (file list, proxy text, config, threads) — these feed into the global context
   const [cookies, setCookies] = useState<CookieFile[]>([]);
   const [proxyText, setProxyText] = useState("");
   const [threads, setThreads] = useState(30);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [progress, setProgress] = useState<ProgressUpdate | null>(null);
-  const [liveResults, setLiveResults] = useState<ProgressUpdate[]>([]);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     getDefaultConfig().then(setConfig).catch(() => {});
   }, []);
+
+  // If a run is active with cookies from the context, show those
+  const displayCookies = isRunning && runCookies.length > 0 ? runCookies : cookies;
+  const displayThreads = isRunning ? runThreads : threads;
+  const displayConfig = isRunning && runConfig ? runConfig : config;
 
   const handleFiles = useCallback((files: FileList) => {
     Array.from(files).forEach((file) => {
@@ -77,56 +85,39 @@ export default function Checker() {
       toast.error("Please add at least one cookie file");
       return;
     }
-    setIsRunning(true);
-    setLiveResults([]);
-    setProgress(null);
-
     try {
-      const result = await startCheck(cookies, proxyText, config || {}, threads);
-      setRunId(result.runId);
+      const result = await start(cookies, proxyText, config || {}, threads);
       toast.success(`Check started: ${result.total} cookies, ${result.threads} threads`);
-
-      const es = subscribeToRun(result.runId, (update) => {
-        if (update.type === "result") {
-          setProgress(update);
-          setLiveResults((prev) => [update, ...prev].slice(0, 100));
-        } else if (update.type === "complete") {
-          setProgress(update);
-          setIsRunning(false);
-          toast.success("Check completed!", {
-            description: `${update.counts?.hits || 0} hits, ${update.counts?.free || 0} free, ${update.counts?.bad || 0} bad`,
-          });
-          es.close();
-        } else if (update.type === "error") {
-          toast.error(update.message || "Check failed");
-          setIsRunning(false);
-          es.close();
-        }
-      });
-      eventSourceRef.current = es;
     } catch (err: any) {
       toast.error(err.message || "Failed to start check");
-      setIsRunning(false);
     }
   };
 
   const handleCancel = async () => {
-    if (runId) {
-      await cancelRun(runId).catch(() => {});
-      setIsRunning(false);
-      eventSourceRef.current?.close();
-      toast.info("Check cancelled");
-    }
+    await cancel();
+    toast.info("Check cancelled");
   };
 
+  // Show error toast from context
   useEffect(() => {
-    return () => {
-      eventSourceRef.current?.close();
-    };
-  }, []);
+    if (runError) {
+      toast.error(runError);
+    }
+  }, [runError]);
+
+  // Show completion toast
+  const lastType = progress?.type;
+  const lastCounts = progress?.counts;
+  useEffect(() => {
+    if (lastType === "complete" && lastCounts) {
+      toast.success("Check completed!", {
+        description: `${lastCounts.hits || 0} hits, ${lastCounts.free || 0} free, ${lastCounts.bad || 0} bad`,
+      });
+    }
+  }, [lastType, lastCounts]);
 
   const processed = progress?.processed || 0;
-  const total = progress?.total || cookies.length;
+  const total = progress?.total || displayCookies.length;
   const progressPercent = total > 0 ? (processed / total) * 100 : 0;
   const counts = progress?.counts;
 
@@ -137,6 +128,12 @@ export default function Checker() {
         <p className="text-muted-foreground mt-1">
           Upload Netflix cookie files and check them against the Netflix API
         </p>
+        {isRunning && (
+          <div className="mt-3 inline-flex items-center gap-2 rounded-md bg-green-500/10 px-3 py-1.5 text-sm text-green-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Server-side check running — safe to navigate away
+          </div>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -148,8 +145,8 @@ export default function Checker() {
               <CardTitle className="flex items-center gap-2 text-lg">
                 <FileText className="h-5 w-5 text-primary" />
                 Cookie Files
-                {cookies.length > 0 && (
-                  <Badge variant="secondary" className="ml-1">{cookies.length}</Badge>
+                {displayCookies.length > 0 && (
+                  <Badge variant="secondary" className="ml-1">{displayCookies.length}</Badge>
                 )}
               </CardTitle>
             </CardHeader>
@@ -158,9 +155,10 @@ export default function Checker() {
                 onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => !isRunning && fileInputRef.current?.click()}
                 className={cn(
                   "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 cursor-pointer transition-all",
+                  isRunning && "opacity-50 cursor-not-allowed",
                   dragOver
                     ? "border-primary bg-primary/5 glow-red"
                     : "border-border hover:border-primary/50"
@@ -175,14 +173,15 @@ export default function Checker() {
                   multiple
                   accept=".txt,.json"
                   className="hidden"
+                  disabled={isRunning}
                   onChange={(e) => e.target.files && handleFiles(e.target.files)}
                 />
               </div>
 
               {/* Cookie File List */}
-              {cookies.length > 0 && (
+              {displayCookies.length > 0 && (
                 <div className="mt-4 space-y-2 max-h-48 overflow-y-auto">
-                  {cookies.map((cookie, i) => (
+                  {displayCookies.map((cookie, i) => (
                     <div
                       key={i}
                       className="flex items-center justify-between rounded-md border border-border bg-secondary/50 p-2.5"
@@ -194,15 +193,16 @@ export default function Checker() {
                           ({(cookie.size / 1024).toFixed(1)} KB)
                         </span>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0"
-                        onClick={() => removeCookie(i)}
-                        disabled={isRunning}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </Button>
+                      {!isRunning && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={() => removeCookie(i)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -220,7 +220,7 @@ export default function Checker() {
             </CardHeader>
             <CardContent>
               <Textarea
-                value={proxyText}
+                value={isRunning ? runProxyText : proxyText}
                 onChange={(e) => setProxyText(e.target.value)}
                 placeholder={"# Add proxies here (one per line)\n# Examples:\n# ip:port\n# user:pass@ip:port\n# socks5://user:pass@ip:port"}
                 className="min-h-[100px] font-mono text-xs resize-y"
@@ -238,6 +238,7 @@ export default function Checker() {
               <button
                 onClick={() => setShowAdvanced(!showAdvanced)}
                 className="flex items-center gap-2 text-lg font-semibold w-full text-left"
+                disabled={isRunning}
               >
                 <Settings2 className="h-5 w-5 text-primary" />
                 Advanced Settings
@@ -246,12 +247,12 @@ export default function Checker() {
                 </Badge>
               </button>
             </CardHeader>
-            {showAdvanced && config && (
+            {showAdvanced && displayConfig && (
               <CardContent className="space-y-5 animate-slide-up">
                 <div>
-                  <Label className="text-sm font-medium">Threads: {threads}</Label>
+                  <Label className="text-sm font-medium">Threads: {displayThreads}</Label>
                   <Slider
-                    value={[threads]}
+                    value={[isRunning ? runThreads : threads]}
                     onValueChange={(v) => setThreads(v[0])}
                     min={1}
                     max={300}
@@ -267,8 +268,8 @@ export default function Checker() {
                 <div>
                   <Label className="text-sm font-medium">NFToken Mode</Label>
                   <Select
-                    value={String(config.nftoken) === "true" ? "both" : String(config.nftoken)}
-                    onValueChange={(v) => setConfig({ ...config, nftoken: v })}
+                    value={String(displayConfig.nftoken) === "true" ? "both" : String(displayConfig.nftoken)}
+                    onValueChange={(v) => setConfig({ ...config!, nftoken: v })}
                     disabled={isRunning}
                   >
                     <SelectTrigger className="mt-2">
@@ -284,13 +285,10 @@ export default function Checker() {
                 </div>
 
                 <div>
-                  <Label className="text-sm font-medium">Request Timeout: {config.performance.request_timeout_seconds}s</Label>
+                  <Label className="text-sm font-medium">Request Timeout: {displayConfig.performance.request_timeout_seconds}s</Label>
                   <Slider
-                    value={[config.performance.request_timeout_seconds]}
-                    onValueChange={(v) => setConfig({
-                      ...config,
-                      performance: { ...config.performance, request_timeout_seconds: v[0] }
-                    })}
+                    value={[displayConfig.performance.request_timeout_seconds]}
+                    onValueChange={(v) => setConfig({ ...config!, performance: { ...config!.performance, request_timeout_seconds: v[0] } })}
                     min={5}
                     max={60}
                     step={1}
@@ -300,13 +298,10 @@ export default function Checker() {
                 </div>
 
                 <div>
-                  <Label className="text-sm font-medium">Retry Attempts: {config.retries.error_proxy_attempts}</Label>
+                  <Label className="text-sm font-medium">Retry Attempts: {displayConfig.retries.error_proxy_attempts}</Label>
                   <Slider
-                    value={[config.retries.error_proxy_attempts]}
-                    onValueChange={(v) => setConfig({
-                      ...config,
-                      retries: { ...config.retries, error_proxy_attempts: v[0] }
-                    })}
+                    value={[displayConfig.retries.error_proxy_attempts]}
+                    onValueChange={(v) => setConfig({ ...config!, retries: { ...config!.retries, error_proxy_attempts: v[0] } })}
                     min={1}
                     max={10}
                     step={1}
@@ -321,33 +316,24 @@ export default function Checker() {
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">Fallback Account Page</Label>
                     <Switch
-                      checked={config.performance.fallback_account_page}
-                      onCheckedChange={(v) => setConfig({
-                        ...config,
-                        performance: { ...config.performance, fallback_account_page: v }
-                      })}
+                      checked={displayConfig.performance.fallback_account_page}
+                      onCheckedChange={(v) => setConfig({ ...config!, performance: { ...config!.performance, fallback_account_page: v } })}
                       disabled={isRunning}
                     />
                   </div>
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">Retry Incomplete Info</Label>
                     <Switch
-                      checked={config.performance.retry_incomplete_info}
-                      onCheckedChange={(v) => setConfig({
-                        ...config,
-                        performance: { ...config.performance, retry_incomplete_info: v }
-                      })}
+                      checked={displayConfig.performance.retry_incomplete_info}
+                      onCheckedChange={(v) => setConfig({ ...config!, performance: { ...config!.performance, retry_incomplete_info: v } })}
                       disabled={isRunning}
                     />
                   </div>
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">NFToken for Free Accounts</Label>
                     <Switch
-                      checked={config.performance.nftoken_for_free}
-                      onCheckedChange={(v) => setConfig({
-                        ...config,
-                        performance: { ...config.performance, nftoken_for_free: v }
-                      })}
+                      checked={displayConfig.performance.nftoken_for_free}
+                      onCheckedChange={(v) => setConfig({ ...config!, performance: { ...config!.performance, nftoken_for_free: v } })}
                       disabled={isRunning}
                     />
                   </div>
@@ -360,27 +346,15 @@ export default function Checker() {
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs text-muted-foreground">Enable Discord notifications</span>
                     <Switch
-                      checked={config.notifications.webhook.enabled}
-                      onCheckedChange={(v) => setConfig({
-                        ...config,
-                        notifications: {
-                          ...config.notifications,
-                          webhook: { ...config.notifications.webhook, enabled: v }
-                        }
-                      })}
+                      checked={displayConfig.notifications.webhook.enabled}
+                      onCheckedChange={(v) => setConfig({ ...config!, notifications: { ...config!.notifications, webhook: { ...config!.notifications.webhook, enabled: v } } })}
                       disabled={isRunning}
                     />
                   </div>
-                  {config.notifications.webhook.enabled && (
+                  {displayConfig.notifications.webhook.enabled && (
                     <Textarea
-                      value={config.notifications.webhook.url}
-                      onChange={(e) => setConfig({
-                        ...config,
-                        notifications: {
-                          ...config.notifications,
-                          webhook: { ...config.notifications.webhook, url: e.target.value }
-                        }
-                      })}
+                      value={displayConfig.notifications.webhook.url}
+                      onChange={(e) => setConfig({ ...config!, notifications: { ...config!.notifications, webhook: { ...config!.notifications.webhook, url: e.target.value } } })}
                       placeholder="https://discord.com/api/webhooks/..."
                       className="text-xs"
                       disabled={isRunning}
@@ -393,41 +367,23 @@ export default function Checker() {
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs text-muted-foreground">Enable Telegram notifications</span>
                     <Switch
-                      checked={config.notifications.telegram.enabled}
-                      onCheckedChange={(v) => setConfig({
-                        ...config,
-                        notifications: {
-                          ...config.notifications,
-                          telegram: { ...config.notifications.telegram, enabled: v }
-                        }
-                      })}
+                      checked={displayConfig.notifications.telegram.enabled}
+                      onCheckedChange={(v) => setConfig({ ...config!, notifications: { ...config!.notifications, telegram: { ...config!.notifications.telegram, enabled: v } } })}
                       disabled={isRunning}
                     />
                   </div>
-                  {config.notifications.telegram.enabled && (
+                  {displayConfig.notifications.telegram.enabled && (
                     <div className="space-y-2">
                       <Textarea
-                        value={config.notifications.telegram.bot_token}
-                        onChange={(e) => setConfig({
-                          ...config,
-                          notifications: {
-                            ...config.notifications,
-                            telegram: { ...config.notifications.telegram, bot_token: e.target.value }
-                          }
-                        })}
+                        value={displayConfig.notifications.telegram.bot_token}
+                        onChange={(e) => setConfig({ ...config!, notifications: { ...config!.notifications, telegram: { ...config!.notifications.telegram, bot_token: e.target.value } } })}
                         placeholder="Bot token from @BotFather"
                         className="text-xs"
                         disabled={isRunning}
                       />
                       <Textarea
-                        value={config.notifications.telegram.chat_id}
-                        onChange={(e) => setConfig({
-                          ...config,
-                          notifications: {
-                            ...config.notifications,
-                            telegram: { ...config.notifications.telegram, chat_id: e.target.value }
-                          }
-                        })}
+                        value={displayConfig.notifications.telegram.chat_id}
+                        onChange={(e) => setConfig({ ...config!, notifications: { ...config!.notifications, telegram: { ...config!.notifications.telegram, chat_id: e.target.value } } })}
                         placeholder="Chat ID (e.g. -1001234567890)"
                         className="text-xs"
                         disabled={isRunning}
@@ -476,7 +432,7 @@ export default function Checker() {
                   {isRunning && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Loader2 className="h-3 w-3 animate-spin" />
-                      Checking cookies...
+                      Checking cookies on server...
                     </div>
                   )}
                 </div>
@@ -566,7 +522,12 @@ function ResultRow({ result }: { result: ProgressUpdate }) {
             <Badge variant="outline" className="text-xs">{result.planName}</Badge>
           )}
           {result.country && (
-            <span className="text-xs text-muted-foreground">{result.country}</span>
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              {getCountryFlag(result.country) ? (
+                <span className="text-sm leading-none">{getCountryFlag(result.country)}</span>
+              ) : null}
+              {result.country}
+            </span>
           )}
         </div>
         {result.email && (
