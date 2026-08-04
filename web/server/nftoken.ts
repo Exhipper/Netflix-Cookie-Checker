@@ -150,6 +150,7 @@ export function buildNfTokenLinks(
   return [
     ["🖥️ PC Login", `https://netflix.com/?nftoken=${normalizedToken}`],
     ["📱 Phone Login", `https://netflix.com/unsupported?nftoken=${normalizedToken}`],
+    ["📺 TV Login", `https://www.netflix.com/activate?nftoken=${normalizedToken}`],
   ];
 }
 

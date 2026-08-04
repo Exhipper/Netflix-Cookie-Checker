@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, ScanLine, History, Settings as SettingsIcon, Menu, X } from "lucide-react";
+import { LayoutDashboard, ScanLine, Settings as SettingsIcon, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/checker", label: "Checker", icon: ScanLine },
-  { to: "/history", label: "History", icon: History },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

@@ -332,11 +332,13 @@ export function getCanonicalOutputLabelSafe(planKey: string): string {
 
 export function describeHttpError(statusCode: number): string {
   const descriptions: Record<number, string> = {
+    401: "HTTP 401 Unauthorized",
     403: "HTTP 403 Forbidden",
+    404: "HTTP 404 Not Found",
     429: "HTTP 429 Rate Limited",
     500: "HTTP 500 Server Error",
     502: "HTTP 502 Bad Gateway",
-    503: "HTTP 503 Service Available",
+    503: "HTTP 503 Service Unavailable",
     504: "HTTP 504 Gateway Timeout",
   };
   return descriptions[statusCode] || `HTTP ${statusCode}`;

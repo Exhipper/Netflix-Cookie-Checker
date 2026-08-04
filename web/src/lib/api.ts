@@ -183,3 +183,116 @@ export async function checkHealth(): Promise<{ status: string; database: string 
   if (!res.ok) throw new Error("Health check failed");
   return res.json();
 }
+
+/** Recheck all stored hits in the database. */
+export async function recheckHits(
+  proxies: string,
+  config: Partial<AppConfig>,
+  threads: number
+): Promise<{ runId: string; total: number; threads: number; recheck: boolean }> {
+  const res = await fetch(`${API_BASE}/api/recheck`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proxies, config, threads }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to start recheck" }));
+    throw new Error(err.error || "Failed to start recheck");
+  }
+  return res.json();
+}
+
+/** Get count of stored hits available for recheck. */
+export async function getRecheckCount(): Promise<{ count: number }> {
+  const res = await fetch(`${API_BASE}/api/recheck/count`);
+  if (!res.ok) throw new Error("Failed to fetch recheck count");
+  return res.json();
+}
+
+/** Generate a single account from a random stored hit, recheck it, and return full details. */
+export async function generateAccount(
+  proxies: string,
+  config: Partial<AppConfig>,
+  threads: number
+): Promise<GeneratedAccount> {
+  const res = await fetch(`${API_BASE}/api/generate-account`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proxies, config, threads }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to generate account" }));
+    throw new Error(err.error || "Failed to generate account");
+  }
+  return res.json();
+}
+
+/** Get country breakdown of all hits. */
+export async function getCountryBreakdown(): Promise<Array<{ country: string; count: number; hits: number; free: number }>> {
+  const res = await fetch(`${API_BASE}/api/country-breakdown`);
+  if (!res.ok) throw new Error("Failed to fetch country breakdown");
+  return res.json();
+}
+
+/** Get hit logs (recent stored cookie hits). */
+export async function getHitLogs(limit = 50, offset = 0): Promise<{ logs: ResultRecord[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const res = await fetch(`${API_BASE}/api/hit-logs?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch hit logs");
+  return res.json();
+}
+
+/** Deduplicate hits - auto delete duplicate cookies. */
+export async function deduplicateHits(): Promise<{ deleted: number }> {
+  const res = await fetch(`${API_BASE}/api/deduplicate`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to deduplicate");
+  return res.json();
+}
+
+/** Get a single result by ID. */
+export async function getResultById(id: number): Promise<ResultRecord> {
+  const res = await fetch(`${API_BASE}/api/results/${id}`);
+  if (!res.ok) throw new Error("Failed to fetch result");
+  return res.json();
+}
+
+/** Subscribe to global dashboard update events. */
+export function subscribeToDashboardEvents(
+  onUpdate: () => void,
+  onError?: (err: Event) => void
+): EventSource {
+  const es = new EventSource(`${API_BASE}/api/events`);
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === "dashboard-update") {
+        onUpdate();
+      }
+    } catch {
+      // ignore parse errors
+    }
+  };
+  if (onError) {
+    es.onerror = onError;
+  }
+  return es;
+}
+
+export interface GeneratedAccount {
+  runId: string;
+  result: {
+    status: string;
+    planKey?: string;
+    planName?: string;
+    country?: string;
+    email?: string;
+    reason?: string;
+    onHold?: boolean;
+    accountInfo?: any;
+    cookieContent?: string;
+    formattedOutput?: string;
+    nfTokenData?: { token: string; expires_at_utc: string } | null;
+    nfTokenLinks?: Array<[string, string]>;
+    isLive: boolean;
+  };
+}

@@ -27,6 +27,96 @@ import { saveResult, updateRunStats } from "./db.js";
 
 const RETRYABLE_STATUS_CODES = new Set([403, 429, 500, 502, 503, 504]);
 
+const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+const LOGIN_PAGE_INDICATORS = [
+  /"login"/i,
+  /netflix\.com\/login/i,
+  /"signIn"/i,
+  /"pageType"\s*:\s*"login"/i,
+  /"pageType"\s*:\s*"signIn"/i,
+  /id="appMountPoint"[\s\S]*?login/i,
+];
+
+const SUSPENDED_INDICATORS = [
+  /account\s+(has\s+been\s+)?suspended/i,
+  /account\s+(has\s+been\s+)?canceled/i,
+  /account\s+(has\s+been\s+)?cancelled/i,
+  /membership\s+(has\s+been\s+)?cancel/i,
+  /"membershipStatus"\s*:\s*"CANCELLED"/i,
+  /"membershipStatus"\s*:\s*"CANCELED"/i,
+  /"membershipStatus"\s*:\s*"SUSPENDED"/i,
+  /"membershipStatus"\s*:\s*"EX_MEMBER"/i,
+];
+
+const PAYMENT_INDICATORS = [
+  /payment\s+(method\s+)?(failed|declined|issue)/i,
+  /"pastDue"\s*:\s*true/i,
+  /"isPastDue"\s*:\s*true/i,
+  /payment_retry/i,
+];
+
+function isLoginPage(text: string): boolean {
+  if (!text) return false;
+  return LOGIN_PAGE_INDICATORS.some((p) => p.test(text));
+}
+
+function isSuspendedAccount(text: string): boolean {
+  if (!text) return false;
+  return SUSPENDED_INDICATORS.some((p) => p.test(text));
+}
+
+function hasPaymentIssue(text: string): boolean {
+  if (!text) return false;
+  return PAYMENT_INDICATORS.some((p) => p.test(text));
+}
+
+function deriveFailureReason(
+  statusCode: number | null,
+  responseText: string | null,
+  extractedInfo: AccountInfo | null
+): string {
+  if (statusCode && REDIRECT_STATUS_CODES.has(statusCode)) {
+    return "cookie expired (redirected to login)";
+  }
+
+  if (statusCode === 401) {
+    return "cookie expired (unauthorized)";
+  }
+
+  if (statusCode === 404) {
+    return "account page not found (HTTP 404)";
+  }
+
+  if (statusCode === 200 && responseText) {
+    if (isLoginPage(responseText)) {
+      return "cookie expired (login page returned)";
+    }
+    if (isSuspendedAccount(responseText)) {
+      return "account suspended or canceled";
+    }
+    if (hasPaymentIssue(responseText)) {
+      return "payment issue / past due";
+    }
+    if (extractedInfo && extractedInfo.membershipStatus) {
+      const status = extractedInfo.membershipStatus.toLowerCase();
+      if (status.includes("cancel") || status.includes("ex_member")) {
+        return "account canceled";
+      }
+      if (status.includes("suspend")) {
+        return "account suspended";
+      }
+    }
+    return "incomplete account data (no subscription info found)";
+  }
+
+  if (statusCode && statusCode > 0) {
+    return describeHttpError(statusCode);
+  }
+
+  return "incomplete account page";
+}
+
 interface CookieTask {
   kind: "bundle" | "missing_cookies" | "read_error";
   cookieFile: string;
@@ -213,6 +303,16 @@ async function processTask(
       const isSubscribed = isSubscribedAccount(info);
       const [planKey, planFolderLabel, planName] = deriveOutputPlanBucket(info, isSubscribed);
       const onHold = isSubscribed && isOnHoldAccount(info);
+      // Account loaded successfully but may still have a specific failure state
+      if (!isSubscribed && !onHold) {
+        const status = (info.membershipStatus || "").toLowerCase();
+        if (status.includes("cancel") || status.includes("ex_member")) {
+          return { status: "failed" as CheckStatus, reason: "account canceled" };
+        }
+        if (status.includes("suspend")) {
+          return { status: "failed" as CheckStatus, reason: "account suspended" };
+        }
+      }
 
       // Generate userGuid
       const userGuid = info.userGuid && info.userGuid !== "null" ? info.userGuid : generateUnknownGuid();
@@ -275,7 +375,7 @@ async function processTask(
         nfTokenData,
       };
     } else {
-      return { status: "failed", reason: "incomplete account page" };
+      return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, info) };
     }
   } else if (lastError || (statusCode && RETRYABLE_STATUS_CODES.has(statusCode))) {
     let reason: string;
@@ -286,9 +386,9 @@ async function processTask(
     } else {
       reason = "proxy error";
     }
-    return { status: "error", reason };
+    return { status: "error" as CheckStatus, reason };
   } else {
-    return { status: "failed", reason: "incomplete account page" };
+    return { status: "failed" as CheckStatus, reason: deriveFailureReason(statusCode, responseText, extractedInfo) };
   }
 }
 
@@ -387,8 +487,10 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
           break;
       }
 
-      // Save to DB (non-blocking)
-      saveResult(runId, result).catch(() => {});
+      // Save to DB (non-blocking) — skip duplicates, they are auto-deleted
+      if (result.status !== "duplicate") {
+        saveResult(runId, result).catch(() => {});
+      }
 
       // Send progress update
       if (onProgress) {
