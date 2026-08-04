@@ -3,7 +3,6 @@ import {
   TrendingUp,
   CheckCircle2,
   XCircle,
-  Copy,
   AlertCircle,
   Activity,
   RefreshCw,
@@ -21,7 +20,6 @@ import {
   Shield,
   History,
   Monitor,
-  Download,
   ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -801,77 +799,6 @@ function AccountModal({
   const country = info.countryOfSignup || "Unknown";
   const email = info.email || "Unknown";
 
-  const knownFields = [
-    { key: "email", label: "Email" },
-    { key: "countryOfSignup", label: "Country" },
-    { key: "localizedPlanName", label: "Plan" },
-    { key: "planKey", label: "Plan Key" },
-    { key: "planPrice", label: "Price" },
-    { key: "maxStreams", label: "Max Streams" },
-    { key: "videoQuality", label: "Quality" },
-    { key: "paymentMethodType", label: "Payment" },
-    { key: "maskedCard", label: "Card" },
-    { key: "memberSince", label: "Member Since" },
-    { key: "nextBillingDate", label: "Next Billing" },
-    { key: "membershipStatus", label: "Membership" },
-    { key: "holdStatus", label: "Hold Status" },
-    { key: "emailVerified", label: "Email Verified" },
-    { key: "phoneNumber", label: "Phone" },
-    { key: "phoneVerified", label: "Phone Verified" },
-    { key: "isExtraMemberAccount", label: "Extra Member" },
-    { key: "showExtraMemberSection", label: "Extra Member Section" },
-    { key: "userGuid", label: "User GUID" },
-    { key: "status", label: "Status" },
-    { key: "reason", label: "Reason" },
-  ];
-
-  const knownKeys = new Set(knownFields.map((f) => f.key));
-  const hiddenKeys = new Set([
-    "accountOwnerName",
-    "profiles",
-    "profilesDisplay",
-    "profileCount",
-    "phoneDisplay",
-  ]);
-
-  const extraEntries = Object.entries(rawInfo).filter(
-    ([key, value]) =>
-      !knownKeys.has(key) &&
-      !hiddenKeys.has(key) &&
-      value !== null &&
-      value !== undefined &&
-      String(value).trim() !== "" &&
-      String(value).toLowerCase() !== "null"
-  );
-
-  const visibleFields = knownFields
-    .map((f) => ({ ...f, value: info[f.key] }))
-    .filter((f) => {
-      const value = f.value;
-      return value !== null && value !== undefined && String(value).trim() !== "" && String(value).toLowerCase() !== "null";
-    });
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
-  };
-
-  const copyAllDetails = () => {
-    const lines = visibleFields.map((f) => `${f.label}: ${f.value}`);
-    for (const [key, value] of extraEntries) {
-      const label = key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase());
-      lines.push(`${label}: ${value}`);
-    }
-    if (result.nfTokenLinks?.length) {
-      lines.push("", "NFToken Links:");
-      for (const [label, url] of result.nfTokenLinks) {
-        lines.push(`${label}: ${url}`);
-      }
-    }
-    navigator.clipboard.writeText(lines.join("\n"));
-    toast.success("Account details copied");
-  };
-
   const handleRecheck = async () => {
     if (!account.storedHitId) return;
     setIsRechecking(true);
@@ -894,20 +821,97 @@ function AccountModal({
     }
   };
 
+  const priorityOrder = [
+    "accountOwnerName",
+    "email",
+    "countryOfSignup",
+    "localizedPlanName",
+    "planKey",
+    "planPrice",
+    "maxStreams",
+    "videoQuality",
+    "paymentMethodType",
+    "maskedCard",
+    "memberSince",
+    "nextBillingDate",
+    "membershipStatus",
+    "holdStatus",
+    "emailVerified",
+    "phoneNumber",
+    "phoneVerified",
+    "profiles",
+    "profileCount",
+    "isExtraMemberAccount",
+    "showExtraMemberSection",
+    "userGuid",
+    "status",
+    "reason",
+  ];
+
+  const labelMap: Record<string, string> = {
+    accountOwnerName: "Account Owner",
+    email: "Email",
+    countryOfSignup: "Country",
+    localizedPlanName: "Plan",
+    planKey: "Plan Key",
+    planPrice: "Price",
+    maxStreams: "Max Streams",
+    videoQuality: "Quality",
+    paymentMethodType: "Payment",
+    maskedCard: "Card",
+    memberSince: "Member Since",
+    nextBillingDate: "Next Billing",
+    membershipStatus: "Membership",
+    holdStatus: "Hold Status",
+    emailVerified: "Email Verified",
+    phoneNumber: "Phone",
+    phoneVerified: "Phone Verified",
+    profiles: "Profiles",
+    profileCount: "Profile Count",
+    isExtraMemberAccount: "Extra Member",
+    showExtraMemberSection: "Extra Member Section",
+    userGuid: "User GUID",
+    status: "Status",
+    reason: "Reason",
+  };
+
+  const accountEntries = Object.entries(info)
+    .filter(([_, value]) => {
+      return value !== null && value !== undefined && String(value).trim() !== "" && String(value).toLowerCase() !== "null";
+    })
+    .sort(([a], [b]) => {
+      const aIndex = priorityOrder.indexOf(a);
+      const bIndex = priorityOrder.indexOf(b);
+      if (aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+      if (aIndex === -1) return 1;
+      if (bIndex === -1) return -1;
+      return aIndex - bIndex;
+    });
+
+  const nfTokenLinks = result.nfTokenLinks?.length
+    ? result.nfTokenLinks
+    : result.nfTokenData?.token
+    ? [
+        ["🖥️ PC Login", `https://netflix.com/?nftoken=${result.nfTokenData.token}`],
+        ["📱 Mobile Login", `https://netflix.com/unsupported?nftoken=${result.nfTokenData.token}`],
+        ["📺 TV Login", `https://www.netflix.com/activate?nftoken=${result.nfTokenData.token}`],
+      ]
+    : [];
+
   const modalContent = (
     <>
-      <div className="relative px-4 pt-4 pb-3 sm:px-5 border-b border-border/50 shrink-0">
+      <div className="relative px-4 pt-3 pb-2 sm:px-5 border-b border-border/50 shrink-0">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge className="bg-primary/20 text-primary border-primary/30 hover:bg-primary/20 px-3 py-1 text-xs font-bold uppercase tracking-wide">
+              <Badge className="bg-primary/20 text-primary border-primary/30 hover:bg-primary/20 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide">
                 {planLabel}
               </Badge>
-              <Badge variant="secondary" className="px-3 py-1 text-xs font-semibold uppercase">
+              <Badge variant="secondary" className="px-2.5 py-0.5 text-[10px] font-semibold uppercase">
                 {country}
               </Badge>
             </div>
-            <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
+            <div className="mt-1.5 text-xs text-muted-foreground flex items-center gap-1">
               <Mail className="h-3 w-3 shrink-0" />
               <span className="truncate">{email}</span>
             </div>
@@ -915,101 +919,48 @@ function AccountModal({
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-full shrink-0"
+            className="h-7 w-7 rounded-full shrink-0"
             onClick={() => onOpenChange(false)}
           >
             <X className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="flex items-center gap-2 mt-3">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={copyAllDetails}
-          >
-            <Copy className="h-3 w-3 mr-1" />
-            Copy
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => downloadText(result.cookieContent || "", `cookie-${email}.txt`)}
-            disabled={!result.cookieContent}
-          >
-            <Download className="h-3 w-3 mr-1" />
-            Cookie
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={handleRecheck}
-            disabled={isRechecking || !account.storedHitId}
-          >
-            {isRechecking ? (
-              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3 w-3 mr-1" />
-            )}
-            Recheck
           </Button>
         </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <ScrollArea className="h-full">
-          <div className="p-4 sm:p-5 space-y-4">
+          <div className="p-3 sm:p-4 space-y-3">
             <div
               className={cn(
-                "flex items-center gap-3 rounded-xl p-3 border",
+                "flex items-center gap-2 rounded-lg p-2.5 border",
                 isLive
                   ? "bg-green-500/10 border-green-500/30"
                   : "bg-red-500/10 border-red-500/30"
               )}
             >
               {isLive ? (
-                <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0" />
+                <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0" />
               ) : (
-                <XCircle className="h-6 w-6 text-red-500 shrink-0" />
+                <XCircle className="h-5 w-5 text-red-500 shrink-0" />
               )}
               <div className="min-w-0">
-                <div className={cn("font-bold text-sm", isLive ? "text-green-500" : "text-red-500")}>
+                <div className={cn("font-bold text-xs", isLive ? "text-green-500" : "text-red-500")}>
                   {isLive ? "Account is LIVE" : "Account is NOT live"}
                 </div>
-                <div className="text-xs text-muted-foreground truncate">
+                <div className="text-[10px] text-muted-foreground truncate">
                   {result.status} {result.reason ? `— ${result.reason}` : ""}
                 </div>
               </div>
             </div>
 
-            <div className="space-y-1">
-              {visibleFields.map((f) => (
-                <InfoRow key={f.key} label={f.label} value={String(f.value)} />
-              ))}
-              {extraEntries.map(([key, value]) => (
-                <InfoRow
-                  key={key}
-                  label={key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
-                  value={String(value)}
-                />
-              ))}
-              {visibleFields.length === 0 && extraEntries.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  No detailed account information was captured for this cookie.
-                </p>
-              )}
-            </div>
-
-            {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Zap className="h-4 w-4 text-primary shrink-0" />
-                  NFToken Login Links
+            {nfTokenLinks.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold">
+                  <Zap className="h-3.5 w-3.5 text-primary shrink-0" />
+                  Login Redirects
                 </div>
-                <div className="grid grid-cols-1 gap-2">
-                  {result.nfTokenLinks.map(([label, url]) => (
+                <div className="grid grid-cols-1 gap-1.5">
+                  {nfTokenLinks.map(([label, url]) => (
                     <a
                       key={label}
                       href={url}
@@ -1019,67 +970,55 @@ function AccountModal({
                     >
                       <Button
                         variant="outline"
-                        className="w-full justify-start h-11 text-sm border-primary/30 hover:bg-primary/10 hover:text-primary"
+                        className="w-full justify-start h-9 text-xs border-primary/30 hover:bg-primary/10 hover:text-primary"
                       >
-                        <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
+                        <ExternalLink className="h-3.5 w-3.5 mr-2 shrink-0" />
                         {label}
                       </Button>
                     </a>
                   ))}
                 </div>
                 {result.nfTokenData?.expires_at_utc && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[10px] text-muted-foreground">
                     NFToken expires: {result.nfTokenData.expires_at_utc}
                   </p>
                 )}
               </div>
             )}
 
-            {result.cookieContent && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold">Cookie Content</span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 text-xs"
-                    onClick={() => copyToClipboard(result.cookieContent || "")}
-                  >
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
-                  </Button>
-                </div>
-                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-36 sm:max-h-40 font-mono break-all whitespace-pre-wrap">
-                  {result.cookieContent}
-                </pre>
-              </div>
-            )}
-
-            {result.formattedOutput && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold">Formatted Output</span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 text-xs"
-                    onClick={() => copyToClipboard(result.formattedOutput || "")}
-                  >
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
-                  </Button>
-                </div>
-                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40 sm:max-h-56 font-mono break-all whitespace-pre-wrap">
-                  {result.formattedOutput}
-                </pre>
-              </div>
-            )}
+            <div className="space-y-0.5">
+              {accountEntries.map(([key, value]) => (
+                <InfoRow
+                  key={key}
+                  label={labelMap[key] || key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
+                  value={String(value)}
+                />
+              ))}
+              {accountEntries.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No detailed account information was captured for this cookie.
+                </p>
+              )}
+            </div>
           </div>
         </ScrollArea>
       </div>
 
-      <div className="border-t border-border/50 p-3 sm:p-4 shrink-0">
-        <Button className="w-full bg-primary hover:bg-primary/90" onClick={() => onOpenChange(false)}>
+      <div className="border-t border-border/50 p-3 sm:p-4 shrink-0 space-y-2">
+        <Button
+          variant="outline"
+          className="w-full h-10 text-xs"
+          onClick={handleRecheck}
+          disabled={isRechecking || !account.storedHitId}
+        >
+          {isRechecking ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+          )}
+          Recheck Account
+        </Button>
+        <Button className="w-full h-10 bg-primary hover:bg-primary/90 text-xs" onClick={() => onOpenChange(false)}>
           Close
         </Button>
       </div>
@@ -1089,11 +1028,11 @@ function AccountModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/85 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           className={cn(
             "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 flex flex-col gap-0 overflow-hidden rounded-2xl border border-border/60 shadow-2xl bg-[#0f0f12]/95 backdrop-blur-xl",
-            "w-[92%] max-w-md max-h-[90dvh]",
+            "w-[94%] max-w-[420px] max-h-[88dvh]",
             "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
           )}
         >
@@ -1112,20 +1051,9 @@ function AccountModal({
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between border-b border-border/40 py-2 gap-3">
-      <span className="text-muted-foreground text-xs shrink-0">{label}</span>
-      <span className="font-medium text-sm text-foreground break-all text-right">{String(value)}</span>
+    <div className="flex items-start justify-between border-b border-border/40 py-1.5 gap-3">
+      <span className="text-muted-foreground text-[11px] shrink-0 pt-0.5">{label}</span>
+      <span className="font-medium text-xs text-foreground break-all text-right">{String(value)}</span>
     </div>
   );
-}
-
-function downloadText(content: string, filename: string) {
-  const blob = new Blob([content], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast.success("Downloaded");
 }
