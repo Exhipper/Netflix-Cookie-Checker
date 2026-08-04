@@ -262,24 +262,112 @@ export async function updateResult(
   );
 }
 
+/** Delete all duplicate-status results from the database. */
+export async function deleteDuplicates(): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    `DELETE FROM results WHERE status = 'duplicate' RETURNING id`
+  );
+  return result.rowCount || 0;
+}
+
+/** Delete duplicate-status results that share the same email or cookie_content as an existing hit. */
+export async function deduplicateHits(): Promise<number> {
+  const pool = getPool();
+  // Delete results with status='duplicate' that have the same email as a success/free result
+  const result = await pool.query(`
+    DELETE FROM results r1
+    WHERE r1.status = 'duplicate'
+    AND EXISTS (
+      SELECT 1 FROM results r2
+      WHERE r2.status IN ('success', 'free')
+      AND r2.email IS NOT NULL
+      AND r2.email = r1.email
+    )
+    RETURNING r1.id
+  `);
+  return result.rowCount || 0;
+}
+
+/** Get country breakdown of all hit results (success + free). */
+export async function getCountryBreakdown(): Promise<Array<{ country: string; count: number; hits: number; free: number }>> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT
+      COALESCE(country, 'Unknown') as country,
+      COUNT(*) as count,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
+      SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
+    FROM results
+    WHERE status IN ('success', 'free')
+    GROUP BY COALESCE(country, 'Unknown')
+    ORDER BY count DESC
+  `);
+  return result.rows as Array<{ country: string; count: number; hits: number; free: number }>;
+}
+
+/** Get recent cookie hit log entries (success + free only, newest first). */
+export async function getHitLogs(limit = 50, offset = 0): Promise<ResultRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  return result.rows as ResultRecord[];
+}
+
+/** Count all hit results (success + free). */
+export async function countHits(): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`
+  );
+  return parseInt(result.rows[0]?.count || "0", 10);
+}
+
+/** Get a single result by ID. */
+export async function getResultById(id: number): Promise<ResultRecord | null> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT * FROM results WHERE id = $1`, [id]);
+  return (result.rows[0] as ResultRecord) || null;
+}
+
 export async function getStats(): Promise<any> {
   const pool = getPool();
   const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);
   const totalResults = await pool.query(`SELECT COUNT(*) as count FROM results`);
+  const totalHits = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`);
+  const activeCookies = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success'`);
   const statusBreakdown = await pool.query(
     `SELECT status, COUNT(*) as count FROM results GROUP BY status`
   );
   const planBreakdown = await pool.query(
     `SELECT plan_key, COUNT(*) as count FROM results WHERE plan_key IS NOT NULL GROUP BY plan_key ORDER BY count DESC`
   );
-  const recentRuns = await pool.query(
-    `SELECT * FROM runs ORDER BY started_at DESC LIMIT 5`
-  );
+  const countryBreakdown = await pool.query(`
+    SELECT
+      COALESCE(country, 'Unknown') as country,
+      COUNT(*) as count,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
+      SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
+    FROM results
+    WHERE status IN ('success', 'free')
+    GROUP BY COALESCE(country, 'Unknown')
+    ORDER BY count DESC
+  `);
+  const recentHits = await pool.query(`
+    SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 10
+  `);
+  const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free') AND cookie_content IS NOT NULL`);
   return {
     totalRuns: totalRuns.rows[0]?.count || 0,
     totalResults: totalResults.rows[0]?.count || 0,
+    totalHits: totalHits.rows[0]?.count || 0,
+    activeCookies: activeCookies.rows[0]?.count || 0,
+    totalCookiesStored: totalCookiesStored.rows[0]?.count || 0,
     statusBreakdown: statusBreakdown.rows,
     planBreakdown: planBreakdown.rows,
-    recentRuns: recentRuns.rows,
+    countryBreakdown: countryBreakdown.rows,
+    recentHits: recentHits.rows,
   };
 }

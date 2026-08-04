@@ -15,10 +15,17 @@ import {
   getAllHitsResults,
   countAllHitsResults,
   updateResult,
+  deleteDuplicates,
+  deduplicateHits,
+  getCountryBreakdown,
+  getHitLogs,
+  countHits,
+  getResultById,
 } from "./db.js";
 import { runCheck } from "./checker.js";
 import { parseProxies } from "./proxy.js";
 import { DEFAULT_CONFIG, mergeConfig } from "./config.js";
+import { buildNfTokenLinks } from "./nftoken.js";
 import type { AppConfig, ProgressUpdate } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -231,6 +238,159 @@ app.get("/api/recheck/count", async (_req, res) => {
     res.json({ count });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || "Failed to count hits" });
+  }
+});
+
+// Generate a single account from a random stored hit, recheck it, and return full details
+app.post("/api/generate-account", async (req, res) => {
+  try {
+    const { proxies: proxyText, config: userConfig, threads } = req.body as {
+      proxies?: string;
+      config?: Partial<AppConfig>;
+      threads?: number;
+    };
+
+    const config = userConfig ? mergeConfig(DEFAULT_CONFIG, userConfig) : DEFAULT_CONFIG;
+    const proxies = proxyText ? parseProxies(proxyText) : [];
+    const threadCount = Math.min(Math.max(threads || 30, 1), 300);
+
+    // Get all stored hits
+    const totalHits = await countAllHitsResults();
+    if (totalHits === 0) {
+      res.status(400).json({ error: "No stored hits to generate from" });
+      return;
+    }
+
+    const storedHits = await getAllHitsResults(5000, 0);
+    // Pick a random hit
+    const randomHit = storedHits[Math.floor(Math.random() * storedHits.length)];
+
+    const runId = crypto.randomUUID();
+    await createRun(runId, 1, config).catch(() => {});
+
+    const abortController = new AbortController();
+    activeRuns.set(runId, abortController);
+
+    const cookies = [{ name: randomHit.email || `result_${randomHit.id}`, content: randomHit.cookie_content! }];
+
+    // Run the check and collect results
+    let checkResult: any = null;
+    let checkError: string | null = null;
+
+    try {
+      const stats = await runCheck({
+        config,
+        cookies,
+        proxies,
+        threadCount,
+        runId,
+        signal: abortController.signal,
+        onProgress: (update) => {
+          if (update.type === "result") {
+            checkResult = update;
+          }
+        },
+      });
+      void stats;
+    } catch (err: any) {
+      checkError = String(err?.message || err);
+    }
+
+    activeRuns.delete(runId);
+
+    if (checkError) {
+      res.status(500).json({ error: checkError });
+      return;
+    }
+
+    if (!checkResult) {
+      res.status(500).json({ error: "No result from recheck" });
+      return;
+    }
+
+    // Build nftoken links
+    const nfTokenData = checkResult.nfTokenData || null;
+    let nfTokenLinks: Array<[string, string]> = [];
+    if (nfTokenData && nfTokenData.token) {
+      const mode = String(config.nftoken) === "true" ? "both" : String(config.nftoken);
+      nfTokenLinks = buildNfTokenLinks(nfTokenData.token, mode);
+    }
+
+    const isLive = checkResult.status === "success" || checkResult.status === "free";
+
+    res.json({
+      runId,
+      result: {
+        status: checkResult.status,
+        planKey: checkResult.planKey,
+        planName: checkResult.planName,
+        country: checkResult.country,
+        email: checkResult.email,
+        reason: checkResult.reason,
+        onHold: checkResult.onHold,
+        accountInfo: checkResult.accountInfo,
+        cookieContent: checkResult.cookieContent,
+        formattedOutput: checkResult.formattedOutput,
+        nfTokenData: nfTokenData,
+        nfTokenLinks,
+        isLive,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to generate account" });
+  }
+});
+
+// Get country breakdown of hits
+app.get("/api/country-breakdown", async (_req, res) => {
+  try {
+    const breakdown = await getCountryBreakdown();
+    res.json(breakdown);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to fetch country breakdown" });
+  }
+});
+
+// Get hit logs (recent stored hits)
+app.get("/api/hit-logs", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const logs = await getHitLogs(limit, offset);
+    const total = await countHits();
+    res.json({ logs, total });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to fetch hit logs" });
+  }
+});
+
+// Deduplicate hits - auto delete duplicate cookies
+app.post("/api/deduplicate", async (_req, res) => {
+  try {
+    const deleted = await deduplicateHits();
+    const totalDeleted = await deleteDuplicates();
+    res.json({ deleted: deleted + totalDeleted });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to deduplicate" });
+  }
+});
+
+// Get a single result by ID
+app.get("/api/results/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" });
+      return;
+    }
+    const result = await getResultById(id);
+    if (!result) {
+      res.status(404).json({ error: "Result not found" });
+      return;
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to fetch result" });
   }
 });
 

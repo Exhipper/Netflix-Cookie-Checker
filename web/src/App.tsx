@@ -7,7 +7,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Checker from "@/pages/Checker";
-import History from "@/pages/History";
 import RunDetail from "@/pages/RunDetail";
 import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
@@ -23,7 +22,6 @@ const App = () => (
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/checker" element={<Checker />} />
-            <Route path="/history" element={<History />} />
             <Route path="/runs/:runId" element={<RunDetail />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />

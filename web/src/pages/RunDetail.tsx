@@ -114,8 +114,8 @@ export default function RunDetail() {
     return (
       <div className="p-8 max-w-7xl mx-auto">
         <p className="text-muted-foreground">Run not found</p>
-        <Link to="/history" className="mt-4 inline-block">
-          <Button variant="outline">Back to History</Button>
+        <Link to="/" className="mt-4 inline-block">
+          <Button variant="outline">Back to Dashboard</Button>
         </Link>
       </div>
     );
@@ -127,9 +127,9 @@ export default function RunDetail() {
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto animate-fade-in">
       <div className="flex items-center justify-between mb-6">
-        <Link to="/history" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
-          Back to History
+          Back to Dashboard
         </Link>
         <Button
           onClick={handleRecheckThisRun}

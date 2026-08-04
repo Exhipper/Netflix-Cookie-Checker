@@ -1,42 +1,92 @@
-import { useEffect, useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ScanLine, TrendingUp, CheckCircle2, XCircle, Copy, AlertCircle, Clock, Activity, RefreshCw, Loader2 } from "lucide-react";
+import { useEffect, useState, useRef, useCallback } from "react";
+import {
+  TrendingUp,
+  CheckCircle2,
+  XCircle,
+  Copy,
+  AlertCircle,
+  Activity,
+  RefreshCw,
+  Loader2,
+  Sparkles,
+  Globe,
+  Cookie,
+  Zap,
+  ExternalLink,
+  Mail,
+  Clock,
+  Trash2,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { getStats, checkHealth, getRecheckCount, recheckHits, getDefaultConfig, subscribeToRun, type RunRecord } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  getStats,
+  checkHealth,
+  getRecheckCount,
+  recheckHits,
+  getDefaultConfig,
+  getCountryBreakdown,
+  getHitLogs,
+  deduplicateHits,
+  generateAccount,
+  type ResultRecord,
+  type GeneratedAccount,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function Dashboard() {
-  const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [health, setHealth] = useState<{ status: string; database: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [recheckCount, setRecheckCount] = useState<number | null>(null);
   const [isRechecking, setIsRechecking] = useState(false);
+  const [countryBreakdown, setCountryBreakdown] = useState<
+    Array<{ country: string; count: number; hits: number; free: number }>
+  >([]);
+  const [hitLogs, setHitLogs] = useState<ResultRecord[]>([]);
+  const [hitLogsTotal, setHitLogsTotal] = useState(0);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedAccount, setGeneratedAccount] = useState<GeneratedAccount | null>(null);
+  const [showAccountModal, setShowAccountModal] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [s, h, rc] = await Promise.all([
-          getStats().catch(() => null),
-          checkHealth().catch(() => null),
-          getRecheckCount().catch(() => null),
-        ]);
-        setStats(s);
-        setHealth(h);
-        if (rc) setRecheckCount(rc.count);
-      } finally {
-        setLoading(false);
-      }
+  const loadData = useCallback(async () => {
+    try {
+      const [s, h, rc, cb, hl] = await Promise.all([
+        getStats().catch(() => null),
+        checkHealth().catch(() => null),
+        getRecheckCount().catch(() => null),
+        getCountryBreakdown().catch(() => []),
+        getHitLogs(20, 0).catch(() => ({ logs: [], total: 0 })),
+      ]);
+      setStats(s);
+      setHealth(h);
+      if (rc) setRecheckCount(rc.count);
+      setCountryBreakdown(cb as typeof countryBreakdown);
+      setHitLogs((hl as any).logs);
+      setHitLogsTotal((hl as any).total);
+    } finally {
+      setLoading(false);
     }
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    // Auto-deduplicate on first load
+    deduplicateHits().catch(() => {});
+    loadData();
+    const interval = setInterval(loadData, 10000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   useEffect(() => {
     return () => {
@@ -55,20 +105,28 @@ export default function Dashboard() {
       const result = await recheckHits("", config, 30);
       toast.success(`Recheck started: ${result.total} stored hits`);
 
-      const es = subscribeToRun(result.runId, (update) => {
-        if (update.type === "complete") {
-          setIsRechecking(false);
-          toast.success("Recheck completed!", {
-            description: `${update.counts?.hits || 0} hits, ${update.counts?.free || 0} free, ${update.counts?.bad || 0} bad`,
-          });
-          es.close();
-          navigate(`/runs/${result.runId}`);
-        } else if (update.type === "error") {
-          setIsRechecking(false);
-          toast.error(update.message || "Recheck failed");
-          es.close();
+      const es = new EventSource(
+        `${import.meta.env.VITE_API_BASE_URL || ""}/api/check/${result.runId}/stream`
+      );
+      es.onmessage = (event) => {
+        try {
+          const update = JSON.parse(event.data);
+          if (update.type === "complete") {
+            setIsRechecking(false);
+            toast.success("Recheck completed!", {
+              description: `${update.counts?.hits || 0} hits, ${update.counts?.free || 0} free, ${update.counts?.bad || 0} bad`,
+            });
+            es.close();
+            loadData();
+          } else if (update.type === "error") {
+            setIsRechecking(false);
+            toast.error(update.message || "Recheck failed");
+            es.close();
+          }
+        } catch {
+          // ignore parse errors
         }
-      });
+      };
       eventSourceRef.current = es;
     } catch (err: any) {
       toast.error(err.message || "Failed to start recheck");
@@ -76,13 +134,35 @@ export default function Dashboard() {
     }
   };
 
+  const handleGenerateAccount = async () => {
+    setIsGenerating(true);
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const result = await generateAccount("", config, 30);
+      setGeneratedAccount(result);
+      setShowAccountModal(true);
+      if (result.result.isLive) {
+        toast.success("Account generated and verified as live!", {
+          description: result.result.planName || result.result.status,
+        });
+      } else {
+        toast.warning("Account generated but not live", {
+          description: result.result.reason || result.result.status,
+        });
+      }
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to generate account");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const totalChecked = stats?.totalResults || 0;
-  const totalHits = stats?.statusBreakdown?.find((s: any) => s.status === "success")?.count || 0;
-  const totalFree = stats?.statusBreakdown?.find((s: any) => s.status === "free")?.count || 0;
-  const totalBad = stats?.statusBreakdown?.find((s: any) => s.status === "failed")?.count || 0;
-  const totalErrors = stats?.statusBreakdown?.find((s: any) => s.status === "error")?.count || 0;
-  const totalDuplicates = stats?.statusBreakdown?.find((s: any) => s.status === "duplicate")?.count || 0;
-  const successRate = totalChecked > 0 ? ((totalHits + totalFree) / totalChecked * 100).toFixed(1) : "0";
+  const activeCookies = stats?.activeCookies || 0;
+  const totalHits = stats?.totalHits || 0;
+  const totalCookiesStored = stats?.totalCookiesStored || 0;
+  const successRate = totalChecked > 0 ? ((totalHits) / totalChecked * 100).toFixed(1) : "0";
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto animate-fade-in">
@@ -90,9 +170,9 @@ export default function Dashboard() {
       <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-muted-foreground mt-1">Monitor your Netflix cookie checking operations</p>
+          <p className="text-muted-foreground mt-1">Monitor your Netflix cookie database in real-time</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button
             onClick={handleRecheck}
             variant="outline"
@@ -104,19 +184,25 @@ export default function Dashboard() {
             ) : (
               <RefreshCw className="h-4 w-4 mr-2" />
             )}
-            {isRechecking ? "Rechecking..." : `Recheck All Hits${recheckCount !== null ? ` (${recheckCount})` : ""}`}
+            {isRechecking ? "Rechecking..." : `Recheck Hits${recheckCount !== null ? ` (${recheckCount})` : ""}`}
           </Button>
-          <Link to="/checker">
-            <Button className="bg-primary hover:bg-primary/90 glow-red">
-              <ScanLine className="h-4 w-4 mr-2" />
-              Start New Check
-            </Button>
-          </Link>
+          <Button
+            onClick={handleGenerateAccount}
+            disabled={isGenerating || totalCookiesStored === 0}
+            className="bg-primary hover:bg-primary/90 glow-red"
+          >
+            {isGenerating ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4 mr-2" />
+            )}
+            {isGenerating ? "Generating..." : "Generate Account"}
+          </Button>
         </div>
       </div>
 
       {/* Health Status */}
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-6 flex items-center gap-3 flex-wrap">
         <div className={cn(
           "flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium",
           health?.database === "connected"
@@ -133,48 +219,67 @@ export default function Dashboard() {
           <Activity className="h-3 w-3" />
           Server: {health?.status || "checking..."}
         </div>
+        <div className="flex items-center gap-2 rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          <Cookie className="h-3 w-3" />
+          Cookies Stored: {totalCookiesStored}
+        </div>
       </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 mb-8">
         <StatCard
-          label="Total Runs"
-          value={stats?.totalRuns || 0}
-          icon={<TrendingUp className="h-5 w-5" />}
-          color="text-blue-500"
-        />
-        <StatCard
-          label="Cookies Checked"
-          value={totalChecked}
-          icon={<ScanLine className="h-5 w-5" />}
-          color="text-purple-500"
-        />
-        <StatCard
-          label="Success Rate"
-          value={`${successRate}%`}
+          label="Active Cookies"
+          value={activeCookies}
           icon={<CheckCircle2 className="h-5 w-5" />}
           color="text-green-500"
         />
         <StatCard
-          label="Active Hits"
+          label="Total Hits"
           value={totalHits}
-          icon={<Activity className="h-5 w-5" />}
+          icon={<TrendingUp className="h-5 w-5" />}
           color="text-primary"
+        />
+        <StatCard
+          label="Cookies Stored"
+          value={totalCookiesStored}
+          icon={<Cookie className="h-5 w-5" />}
+          color="text-purple-500"
+        />
+        <StatCard
+          label="Hit Rate"
+          value={`${successRate}%`}
+          icon={<Activity className="h-5 w-5" />}
+          color="text-blue-500"
         />
       </div>
 
-      {/* Status Breakdown */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      {/* Country Breakdown + Plan Distribution */}
+      <div className="grid gap-6 lg:grid-cols-2 mb-8">
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Status Breakdown</CardTitle>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Globe className="h-5 w-5 text-primary" />
+              Country Breakdown
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <StatusRow label="Hits (Subscribed)" value={totalHits} total={totalChecked} color="bg-green-500" />
-            <StatusRow label="Free (No Sub)" value={totalFree} total={totalChecked} color="bg-blue-500" />
-            <StatusRow label="Failed" value={totalBad} total={totalChecked} color="bg-red-500" />
-            <StatusRow label="Duplicates" value={totalDuplicates} total={totalChecked} color="bg-yellow-500" />
-            <StatusRow label="Errors" value={totalErrors} total={totalChecked} color="bg-orange-500" />
+            {countryBreakdown.length > 0 ? (
+              countryBreakdown.map((entry) => {
+                const total = countryBreakdown.reduce((sum, e) => sum + e.count, 0);
+                return (
+                  <CountryRow
+                    key={entry.country}
+                    country={entry.country}
+                    count={entry.count}
+                    hits={entry.hits}
+                    free={entry.free}
+                    total={total}
+                  />
+                );
+              })
+            ) : (
+              <p className="text-sm text-muted-foreground">No country data available yet</p>
+            )}
           </CardContent>
         </Card>
 
@@ -203,67 +308,54 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Recent Runs */}
-      <div className="mt-8">
-        <h2 className="text-xl font-semibold mb-4">Recent Runs</h2>
+      {/* Real-time Cookie Hit Logs */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-semibold">Cookie Hit Logs</h2>
+            <Badge variant="secondary" className="text-xs">{hitLogsTotal} total stored</Badge>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => loadData()}
+            className="text-xs text-muted-foreground"
+          >
+            <RefreshCw className="h-3 w-3 mr-1" />
+            Refresh
+          </Button>
+        </div>
         {loading ? (
           <div className="space-y-2">
-            {[1, 2, 3].map((i) => (
+            {[1, 2, 3, 4, 5].map((i) => (
               <div key={i} className="h-16 rounded-lg bg-secondary animate-pulse" />
             ))}
           </div>
-        ) : stats?.recentRuns?.length > 0 ? (
+        ) : hitLogs.length > 0 ? (
           <div className="space-y-2">
-            {stats.recentRuns.map((run: RunRecord) => (
-              <Link
-                key={run.id}
-                to={`/runs/${run.id}`}
-                className="flex items-center justify-between rounded-lg border border-border bg-card p-4 hover:border-primary/50 transition-all"
-              >
-                <div className="flex items-center gap-4">
-                  <div className={cn(
-                    "flex h-10 w-10 items-center justify-center rounded-lg",
-                    run.status === "completed" ? "bg-green-500/10 text-green-500" :
-                    run.status === "running" ? "bg-primary/10 text-primary" :
-                    run.status === "cancelled" ? "bg-yellow-500/10 text-yellow-500" :
-                    "bg-red-500/10 text-red-500"
-                  )}>
-                    {run.status === "completed" ? <CheckCircle2 className="h-5 w-5" /> :
-                     run.status === "running" ? <Activity className="h-5 w-5 animate-pulse" /> :
-                     <XCircle className="h-5 w-5" />}
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium">
-                      {new Date(run.started_at).toLocaleString()}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {run.total_cookies} cookies processed
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-green-500 font-medium">{run.hits} hits</span>
-                  <span className="text-blue-500">{run.free} free</span>
-                  <span className="text-red-500">{run.bad} bad</span>
-                </div>
-              </Link>
+            {hitLogs.map((log) => (
+              <HitLogRow key={log.id} log={log} />
             ))}
           </div>
         ) : (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-12">
-              <AlertCircle className="h-8 w-8 text-muted-foreground mb-2" />
-              <p className="text-sm text-muted-foreground">No runs yet. Start your first check!</p>
-              <Link to="/checker" className="mt-4">
-                <Button variant="outline" size="sm">
-                  <ScanLine className="h-4 w-4 mr-2" />
-                  Go to Checker
-                </Button>
-              </Link>
+              <Cookie className="h-8 w-8 text-muted-foreground mb-2" />
+              <p className="text-sm text-muted-foreground">No cookie hits stored yet</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Run a check to start collecting hits in the database
+              </p>
             </CardContent>
           </Card>
         )}
       </div>
+
+      {/* Account Generation Modal */}
+      <AccountModal
+        open={showAccountModal}
+        onOpenChange={setShowAccountModal}
+        account={generatedAccount}
+      />
     </div>
   );
 }
@@ -282,17 +374,223 @@ function StatCard({ label, value, icon, color }: { label: string; value: number 
   );
 }
 
-function StatusRow({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
-  const percentage = total > 0 ? (value / total * 100) : 0;
+function CountryRow({ country, count, hits, free, total }: { country: string; count: number; hits: number; free: number; total: number }) {
+  const percentage = total > 0 ? (count / total * 100) : 0;
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-sm text-muted-foreground">{label}</span>
-        <span className="text-sm font-semibold">{value}</span>
+        <div className="flex items-center gap-2">
+          <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-sm font-medium">{country}</span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-green-500">{hits} hits</span>
+          <span className="text-blue-500">{free} free</span>
+          <span className="text-sm font-semibold">{count}</span>
+        </div>
       </div>
       <div className="h-2 rounded-full bg-secondary overflow-hidden">
-        <div className={cn("h-full rounded-full transition-all duration-500", color)} style={{ width: `${percentage}%` }} />
+        <div className="h-full rounded-full bg-primary transition-all duration-500" style={{ width: `${percentage}%` }} />
       </div>
+    </div>
+  );
+}
+
+function HitLogRow({ log }: { log: ResultRecord }) {
+  const icon = log.status === "success" ? <CheckCircle2 className="h-5 w-5 text-green-500" /> :
+    log.status === "free" ? <CheckCircle2 className="h-5 w-5 text-blue-500" /> :
+    <XCircle className="h-5 w-5 text-red-500" />;
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3 hover:border-primary/30 transition-all">
+      <div className={cn(
+        "flex h-10 w-10 items-center justify-center rounded-lg shrink-0",
+        log.status === "success" ? "bg-green-500/10" : "bg-blue-500/10"
+      )}>
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          {log.plan_name && (
+            <Badge variant="secondary" className="text-xs">{log.plan_name}</Badge>
+          )}
+          {log.country && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Globe className="h-3 w-3" />
+              {log.country}
+            </span>
+          )}
+          {log.on_hold && (
+            <Badge variant="outline" className="text-xs text-yellow-500 border-yellow-500/30">
+              On Hold
+            </Badge>
+          )}
+        </div>
+        {log.email && (
+          <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5 truncate">
+            <Mail className="h-3 w-3 shrink-0" />
+            {log.email}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
+        <Clock className="h-3 w-3" />
+        {new Date(log.checked_at).toLocaleString()}
+      </div>
+    </div>
+  );
+}
+
+function AccountModal({
+  open,
+  onOpenChange,
+  account,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  account: GeneratedAccount | null;
+}) {
+  if (!account) return null;
+
+  const result = account.result;
+  const info = result.accountInfo || {};
+  const isLive = result.isLive;
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success("Copied to clipboard");
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-xl">
+            <Sparkles className="h-5 w-5 text-primary" />
+            Generated Account
+          </DialogTitle>
+          <DialogDescription>
+            Account generated from stored hit database and rechecked for liveness
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Live Status Banner */}
+        <div className={cn(
+          "flex items-center gap-3 rounded-lg p-4",
+          isLive ? "bg-green-500/10 border border-green-500/30" : "bg-red-500/10 border border-red-500/30"
+        )}>
+          {isLive ? (
+            <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0" />
+          ) : (
+            <XCircle className="h-6 w-6 text-red-500 shrink-0" />
+          )}
+          <div>
+            <div className={cn("font-semibold", isLive ? "text-green-500" : "text-red-500")}>
+              {isLive ? "Account is LIVE" : "Account is NOT live"}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {result.status} {result.reason ? `— ${result.reason}` : ""}
+            </div>
+          </div>
+        </div>
+
+        {/* Account Info Grid */}
+        {Object.keys(info).length > 0 && (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            {info.accountOwnerName && <InfoRow label="Name" value={info.accountOwnerName} />}
+            {info.email && <InfoRow label="Email" value={info.email} />}
+            {info.countryOfSignup && <InfoRow label="Country" value={info.countryOfSignup} />}
+            {info.localizedPlanName && <InfoRow label="Plan" value={info.localizedPlanName} />}
+            {info.planPrice && <InfoRow label="Price" value={info.planPrice} />}
+            {info.videoQuality && <InfoRow label="Quality" value={info.videoQuality} />}
+            {info.maxStreams && <InfoRow label="Max Streams" value={info.maxStreams} />}
+            {info.membershipStatus && <InfoRow label="Membership" value={info.membershipStatus} />}
+            {info.paymentMethodType && <InfoRow label="Payment" value={info.paymentMethodType} />}
+            {info.maskedCard && <InfoRow label="Card" value={info.maskedCard} />}
+            {info.memberSince && <InfoRow label="Member Since" value={info.memberSince} />}
+            {info.nextBillingDate && <InfoRow label="Next Billing" value={info.nextBillingDate} />}
+            {info.holdStatus && <InfoRow label="Hold Status" value={info.holdStatus} />}
+            {info.emailVerified && <InfoRow label="Email Verified" value={info.emailVerified} />}
+            {info.profilesDisplay && <InfoRow label="Profiles" value={info.profilesDisplay} />}
+          </div>
+        )}
+
+        {/* NFToken Redirect Buttons */}
+        {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Zap className="h-4 w-4 text-primary" />
+              NFToken Login Links
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {result.nfTokenLinks.map(([label, url]) => (
+                <a key={label} href={url} target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" className="w-full">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    {label}
+                  </Button>
+                </a>
+              ))}
+            </div>
+            {result.nfTokenData?.expires_at_utc && (
+              <p className="text-xs text-muted-foreground">
+                NFToken expires: {result.nfTokenData.expires_at_utc}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Cookie Content */}
+        {result.cookieContent && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">Cookie Content</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => copyToClipboard(result.cookieContent || "")}
+              >
+                <Copy className="h-3 w-3 mr-1" />
+                Copy
+              </Button>
+            </div>
+            <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-48 font-mono">
+              {result.cookieContent}
+            </pre>
+          </div>
+        )}
+
+        {/* Formatted Output */}
+        {result.formattedOutput && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">Formatted Output</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => copyToClipboard(result.formattedOutput || "")}
+              >
+                <Copy className="h-3 w-3 mr-1" />
+                Copy
+              </Button>
+            </div>
+            <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-64 font-mono">
+              {result.formattedOutput}
+            </pre>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between border-b border-border/50 py-1.5">
+      <span className="text-muted-foreground text-xs">{label}</span>
+      <span className="font-medium text-right truncate ml-2 text-sm">{String(value)}</span>
     </div>
   );
 }

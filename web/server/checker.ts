@@ -487,8 +487,10 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
           break;
       }
 
-      // Save to DB (non-blocking)
-      saveResult(runId, result).catch(() => {});
+      // Save to DB (non-blocking) — skip duplicates, they are auto-deleted
+      if (result.status !== "duplicate") {
+        saveResult(runId, result).catch(() => {});
+      }
 
       // Send progress update
       if (onProgress) {
