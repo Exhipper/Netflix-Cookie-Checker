@@ -2,6 +2,26 @@ import { Pool } from "pg";
 
 let pool: Pool | null = null;
 
+/** Dashboard SSE clients for real-time updates. */
+const dashboardClients = new Set<() => void>();
+
+export function onDashboardUpdate(callback: () => void): () => void {
+  dashboardClients.add(callback);
+  return () => {
+    dashboardClients.delete(callback);
+  };
+}
+
+export function notifyDashboardUpdate(): void {
+  for (const cb of dashboardClients) {
+    try {
+      cb();
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function getPool(): Pool {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
@@ -69,6 +89,11 @@ export async function initDatabase(): Promise<void> {
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_results_plan_key ON results(plan_key)
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_results_email_unique
+      ON results (email)
+      WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC)
@@ -141,24 +166,64 @@ export async function saveResult(
   result: CheckResult
 ): Promise<void> {
   const pool = getPool();
-  await pool.query(
-    `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-    [
-      runId,
-      result.status,
-      result.planKey || null,
-      result.planName || null,
-      result.country || null,
-      result.email || null,
-      result.reason || null,
-      result.onHold || false,
-      result.accountInfo ? JSON.stringify(result.accountInfo) : null,
-      result.cookieContent || null,
-      result.formattedOutput || null,
-      result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
-    ]
-  );
+  const email = (result.email || "").trim().toLowerCase();
+  const isHit = result.status === "success" || result.status === "free";
+
+  // For hits with an email, upsert so the same account is stored only once.
+  if (isHit && email) {
+    await pool.query(
+      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, checked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+       ON CONFLICT (email) WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+       DO UPDATE SET
+         run_id = EXCLUDED.run_id,
+         status = EXCLUDED.status,
+         plan_key = EXCLUDED.plan_key,
+         plan_name = EXCLUDED.plan_name,
+         country = EXCLUDED.country,
+         reason = EXCLUDED.reason,
+         on_hold = EXCLUDED.on_hold,
+         account_info = EXCLUDED.account_info,
+         cookie_content = EXCLUDED.cookie_content,
+         formatted_output = EXCLUDED.formatted_output,
+         nftoken_data = EXCLUDED.nftoken_data,
+         checked_at = NOW()`,
+      [
+        runId,
+        result.status,
+        result.planKey || null,
+        result.planName || null,
+        result.country || null,
+        email,
+        result.reason || null,
+        result.onHold || false,
+        result.accountInfo ? JSON.stringify(result.accountInfo) : null,
+        result.cookieContent || null,
+        result.formattedOutput || null,
+        result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+      ]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        runId,
+        result.status,
+        result.planKey || null,
+        result.planName || null,
+        result.country || null,
+        email || null,
+        result.reason || null,
+        result.onHold || false,
+        result.accountInfo ? JSON.stringify(result.accountInfo) : null,
+        result.cookieContent || null,
+        result.formattedOutput || null,
+        result.nfTokenData ? JSON.stringify(result.nfTokenData) : null,
+      ]
+    );
+  }
+  notifyDashboardUpdate();
 }
 
 export async function updateRunStats(
@@ -284,6 +349,23 @@ export async function deduplicateHits(): Promise<number> {
       AND r2.email IS NOT NULL
       AND r2.email = r1.email
     )
+    RETURNING r1.id
+  `);
+  return result.rowCount || 0;
+}
+
+/** Remove older duplicate success/free rows, keeping only the newest per email. */
+export async function deduplicateSuccessFreeHits(): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(`
+    DELETE FROM results r1
+    WHERE r1.id NOT IN (
+      SELECT MAX(id) FROM results
+      WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+      GROUP BY email
+    )
+    AND r1.status IN ('success', 'free')
+    AND r1.email IS NOT NULL AND r1.email <> ''
     RETURNING r1.id
   `);
   return result.rowCount || 0;

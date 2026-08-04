@@ -17,10 +17,13 @@ import {
   updateResult,
   deleteDuplicates,
   deduplicateHits,
+  deduplicateSuccessFreeHits,
   getCountryBreakdown,
   getHitLogs,
   countHits,
   getResultById,
+  onDashboardUpdate,
+  notifyDashboardUpdate,
 } from "./db.js";
 import { runCheck } from "./checker.js";
 import { parseProxies } from "./proxy.js";
@@ -58,7 +61,38 @@ function sendSse(runId: string, data: ProgressUpdate) {
 // Active runs (for cancellation)
 const activeRuns = new Map<string, AbortController>();
 
+// Global dashboard SSE clients
+const dashboardSseClients = new Set<express.Response>();
+
+onDashboardUpdate(() => {
+  const message = `data: ${JSON.stringify({ type: "dashboard-update" })}
+
+`;
+  for (const res of dashboardSseClients) {
+    try {
+      res.write(message);
+    } catch {
+      dashboardSseClients.delete(res);
+    }
+  }
+});
+
 // ---- API Routes ----
+
+// Global dashboard SSE stream
+app.get("/api/events", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+  });
+  res.write("data: {\"type\":\"connected\"}\n\n");
+  dashboardSseClients.add(res);
+  req.on("close", () => {
+    dashboardSseClients.delete(res);
+  });
+});
 
 // Health check
 app.get("/api/health", async (_req, res) => {
@@ -264,6 +298,7 @@ app.post("/api/generate-account", async (req, res) => {
     const storedHits = await getAllHitsResults(5000, 0);
     // Pick a random hit
     const randomHit = storedHits[Math.floor(Math.random() * storedHits.length)];
+    const storedAccountInfo = (randomHit.account_info || {}) as Record<string, any>;
 
     const runId = crypto.randomUUID();
     await createRun(runId, 1, config).catch(() => {});
@@ -308,8 +343,15 @@ app.post("/api/generate-account", async (req, res) => {
       return;
     }
 
-    // Build nftoken links
-    const nfTokenData = checkResult.nfTokenData || null;
+    // Merge stored account info with recheck info so the modal always has data
+    const mergedAccountInfo = { ...storedAccountInfo, ...(checkResult.accountInfo || {}) };
+    // Ensure email/country/plan from the recheck or stored data are present
+    if (!mergedAccountInfo.email && randomHit.email) mergedAccountInfo.email = randomHit.email;
+    if (!mergedAccountInfo.countryOfSignup && randomHit.country) mergedAccountInfo.countryOfSignup = randomHit.country;
+    if (!mergedAccountInfo.localizedPlanName && randomHit.plan_name) mergedAccountInfo.localizedPlanName = randomHit.plan_name;
+
+    // Build nftoken links - prefer fresh token, fall back to stored token
+    let nfTokenData = checkResult.nfTokenData || randomHit.nftoken_data || null;
     let nfTokenLinks: Array<[string, string]> = [];
     if (nfTokenData && nfTokenData.token) {
       const mode = String(config.nftoken) === "true" ? "both" : String(config.nftoken);
@@ -322,14 +364,14 @@ app.post("/api/generate-account", async (req, res) => {
       runId,
       result: {
         status: checkResult.status,
-        planKey: checkResult.planKey,
-        planName: checkResult.planName,
-        country: checkResult.country,
-        email: checkResult.email,
+        planKey: checkResult.planKey || randomHit.plan_key || undefined,
+        planName: checkResult.planName || randomHit.plan_name || undefined,
+        country: checkResult.country || randomHit.country || undefined,
+        email: checkResult.email || randomHit.email || undefined,
         reason: checkResult.reason,
         onHold: checkResult.onHold,
-        accountInfo: checkResult.accountInfo,
-        cookieContent: checkResult.cookieContent,
+        accountInfo: mergedAccountInfo,
+        cookieContent: checkResult.cookieContent || randomHit.cookie_content || undefined,
         formattedOutput: checkResult.formattedOutput,
         nfTokenData: nfTokenData,
         nfTokenLinks,
@@ -369,7 +411,10 @@ app.post("/api/deduplicate", async (_req, res) => {
   try {
     const deleted = await deduplicateHits();
     const totalDeleted = await deleteDuplicates();
-    res.json({ deleted: deleted + totalDeleted });
+    const successFreeDeleted = await deduplicateSuccessFreeHits();
+    const total = deleted + totalDeleted + successFreeDeleted;
+    notifyDashboardUpdate();
+    res.json({ deleted: total });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || "Failed to deduplicate" });
   }

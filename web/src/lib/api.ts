@@ -256,6 +256,28 @@ export async function getResultById(id: number): Promise<ResultRecord> {
   return res.json();
 }
 
+/** Subscribe to global dashboard update events. */
+export function subscribeToDashboardEvents(
+  onUpdate: () => void,
+  onError?: (err: Event) => void
+): EventSource {
+  const es = new EventSource(`${API_BASE}/api/events`);
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === "dashboard-update") {
+        onUpdate();
+      }
+    } catch {
+      // ignore parse errors
+    }
+  };
+  if (onError) {
+    es.onerror = onError;
+  }
+  return es;
+}
+
 export interface GeneratedAccount {
   runId: string;
   result: {

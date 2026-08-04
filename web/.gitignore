@@ -9,6 +9,14 @@ dist-ssr
 .env
 *.local
 
+# Native
+ios/
+android/
+core
+
+# Expo
+.expo
+
 # debug
 npm-debug.log*
 yarn-debug.log*
