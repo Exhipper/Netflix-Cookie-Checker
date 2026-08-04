@@ -67,6 +67,7 @@ export async function initDatabase(): Promise<void> {
         id SERIAL PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
         checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         status TEXT NOT NULL,
         plan_key TEXT,
         plan_name TEXT,
@@ -82,6 +83,22 @@ export async function initDatabase(): Promise<void> {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS generation_history (
+        id SERIAL PRIMARY KEY,
+        result_id INTEGER NOT NULL REFERENCES results(id) ON DELETE CASCADE,
+        generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        was_live BOOLEAN NOT NULL DEFAULT false,
+        status TEXT NOT NULL,
+        plan_key TEXT,
+        plan_name TEXT,
+        country TEXT,
+        email TEXT,
+        reason TEXT,
+        account_info JSONB
+      )
+    `);
+
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_results_run_id ON results(run_id)
     `);
     await client.query(`
@@ -91,7 +108,19 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_results_plan_key ON results(plan_key)
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_results_country ON results(country)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_results_email ON results(email)
+    `);
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_generation_history_generated_at ON generation_history(generated_at DESC)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_generation_history_result_id ON generation_history(result_id)
     `);
 
     // Deduplicate existing success/free hits before (re)creating the unique email index.
@@ -151,6 +180,7 @@ export interface ResultRecord {
   id: number;
   run_id: string;
   checked_at: string;
+  last_verified_at: string;
   status: string;
   plan_key: string | null;
   plan_name: string | null;
@@ -162,6 +192,20 @@ export interface ResultRecord {
   cookie_content: string | null;
   formatted_output: string | null;
   nftoken_data: any;
+}
+
+export interface GenerationHistoryRecord {
+  id: number;
+  result_id: number;
+  generated_at: string;
+  was_live: boolean;
+  status: string;
+  plan_key: string | null;
+  plan_name: string | null;
+  country: string | null;
+  email: string | null;
+  reason: string | null;
+  account_info: any;
 }
 
 import type { CheckResult, RunStats } from "./types.js";
@@ -189,8 +233,8 @@ export async function saveResult(
   // For hits with an email, upsert so the same account is stored only once.
   if (isHit && email) {
     await pool.query(
-      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, checked_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, checked_at, last_verified_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
        ON CONFLICT (email) WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
        DO UPDATE SET
          run_id = EXCLUDED.run_id,
@@ -204,7 +248,8 @@ export async function saveResult(
          cookie_content = EXCLUDED.cookie_content,
          formatted_output = EXCLUDED.formatted_output,
          nftoken_data = EXCLUDED.nftoken_data,
-         checked_at = NOW()`,
+         checked_at = NOW(),
+         last_verified_at = NOW()`,
       [
         runId,
         result.status,
@@ -326,7 +371,7 @@ export async function updateResult(
   const pool = getPool();
   await pool.query(
     `UPDATE results SET status = $1, plan_key = $2, plan_name = $3, country = $4, email = $5, reason = $6,
-     on_hold = $7, account_info = $8, formatted_output = $9, nftoken_data = $10, checked_at = NOW()
+     on_hold = $7, account_info = $8, formatted_output = $9, nftoken_data = $10, checked_at = NOW(), last_verified_at = NOW()
      WHERE id = $11`,
     [
       result.status,
@@ -342,6 +387,14 @@ export async function updateResult(
       resultId,
     ]
   );
+  notifyDashboardUpdate();
+}
+
+/** Delete a result by ID. */
+export async function deleteResultById(resultId: number): Promise<void> {
+  const pool = getPool();
+  await pool.query(`DELETE FROM results WHERE id = $1`, [resultId]);
+  notifyDashboardUpdate();
 }
 
 /** Delete all duplicate-status results from the database. */
@@ -424,6 +477,67 @@ export async function countHits(): Promise<number> {
   return parseInt(result.rows[0]?.count || "0", 10);
 }
 
+/** Search and filter hit logs by country, plan, or email. */
+export async function searchHitLogs(
+  options: {
+    country?: string;
+    plan?: string;
+    email?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{ logs: ResultRecord[]; total: number }> {
+  const pool = getPool();
+  const conditions: string[] = ["status IN ('success', 'free')"];
+  const params: any[] = [];
+
+  if (options.country && options.country !== "all") {
+    params.push(options.country);
+    conditions.push(`country = $${params.length}`);
+  }
+  if (options.plan && options.plan !== "all") {
+    params.push(options.plan);
+    conditions.push(`(plan_key = $${params.length} OR plan_name ILIKE $${params.length})`);
+  }
+  if (options.email && options.email.trim() !== "") {
+    params.push(`%${options.email.trim().toLowerCase()}%`);
+    conditions.push(`email ILIKE $${params.length}`);
+  }
+
+  const whereClause = `WHERE ${conditions.join(" AND ")}`;
+  const countQuery = `SELECT COUNT(*) as count FROM results ${whereClause}`;
+  const countResult = await pool.query(countQuery, params);
+  const total = parseInt(countResult.rows[0]?.count || "0", 10);
+
+  const limit = Math.min(options.limit || 50, 500);
+  const offset = options.offset || 0;
+  params.push(limit, offset);
+  const logsQuery = `SELECT * FROM results ${whereClause} ORDER BY checked_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
+  const logsResult = await pool.query(logsQuery, params);
+  return { logs: logsResult.rows as ResultRecord[], total };
+}
+
+/** Get distinct filter values for the hit logs. */
+export async function getHitLogFilters(): Promise<{ countries: string[]; plans: string[] }> {
+  const pool = getPool();
+  const countryResult = await pool.query(`
+    SELECT DISTINCT COALESCE(country, 'Unknown') as country
+    FROM results
+    WHERE status IN ('success', 'free') AND country IS NOT NULL
+    ORDER BY country
+  `);
+  const planResult = await pool.query(`
+    SELECT DISTINCT COALESCE(plan_key, 'unknown') as plan_key
+    FROM results
+    WHERE status IN ('success', 'free') AND plan_key IS NOT NULL
+    ORDER BY plan_key
+  `);
+  return {
+    countries: countryResult.rows.map((r) => r.country as string),
+    plans: planResult.rows.map((r) => r.plan_key as string),
+  };
+}
+
 /** Get a single result by ID. */
 export async function getResultById(id: number): Promise<ResultRecord | null> {
   const pool = getPool();
@@ -450,6 +564,72 @@ export async function getLatestResultByCookieContent(content: string): Promise<R
     [content]
   );
   return (result.rows[0] as ResultRecord) || null;
+}
+
+/** Record that an account was generated. */
+export async function recordGeneration(
+  resultId: number,
+  result: CheckResult
+): Promise<void> {
+  const pool = getPool();
+  const isLive = result.status === "success" || result.status === "free";
+  await pool.query(
+    `INSERT INTO generation_history (result_id, was_live, status, plan_key, plan_name, country, email, reason, account_info)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      resultId,
+      isLive,
+      result.status,
+      result.planKey || null,
+      result.planName || null,
+      result.country || null,
+      result.email || null,
+      result.reason || null,
+      result.accountInfo ? JSON.stringify(result.accountInfo) : null,
+    ]
+  );
+  notifyDashboardUpdate();
+}
+
+/** Get recent account generation history. */
+export async function getGenerationHistory(limit = 50, offset = 0): Promise<GenerationHistoryRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM generation_history ORDER BY generated_at DESC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  return result.rows as GenerationHistoryRecord[];
+}
+
+/** Count total generation history entries. */
+export async function countGenerationHistory(): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(`SELECT COUNT(*) as count FROM generation_history`);
+  return parseInt(result.rows[0]?.count || "0", 10);
+}
+
+/** Get hits that have not been verified in the last X days. */
+export async function getStaleHits(days: number): Promise<ResultRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT * FROM results
+     WHERE status IN ('success', 'free')
+     AND last_verified_at < NOW() - INTERVAL '${Math.max(1, days)} days'
+     ORDER BY last_verified_at ASC
+     LIMIT 1000`,
+  );
+  return result.rows as ResultRecord[];
+}
+
+/** Count stale hits. */
+export async function countStaleHits(days: number): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT COUNT(*) as count FROM results
+     WHERE status IN ('success', 'free')
+     AND last_verified_at < NOW() - INTERVAL '${Math.max(1, days)} days'`
+  );
+  return parseInt(result.rows[0]?.count || "0", 10);
 }
 
 export async function getStats(): Promise<any> {
@@ -479,6 +659,16 @@ export async function getStats(): Promise<any> {
     SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 10
   `);
   const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free') AND cookie_content IS NOT NULL`);
+  const staleHits7d = await pool.query(`
+    SELECT COUNT(*) as count FROM results
+    WHERE status IN ('success', 'free')
+    AND last_verified_at < NOW() - INTERVAL '7 days'
+  `);
+  const staleHits1d = await pool.query(`
+    SELECT COUNT(*) as count FROM results
+    WHERE status IN ('success', 'free')
+    AND last_verified_at < NOW() - INTERVAL '1 days'
+  `);
   return {
     totalRuns: totalRuns.rows[0]?.count || 0,
     totalResults: totalResults.rows[0]?.count || 0,
@@ -489,5 +679,7 @@ export async function getStats(): Promise<any> {
     planBreakdown: planBreakdown.rows,
     countryBreakdown: countryBreakdown.rows,
     recentHits: recentHits.rows,
+    staleHits7d: staleHits7d.rows[0]?.count || 0,
+    staleHits1d: staleHits1d.rows[0]?.count || 0,
   };
 }

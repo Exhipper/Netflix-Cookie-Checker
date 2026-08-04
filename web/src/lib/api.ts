@@ -52,6 +52,7 @@ export interface ResultRecord {
   id: number;
   run_id: string;
   checked_at: string;
+  last_verified_at: string;
   status: string;
   plan_key: string | null;
   plan_name: string | null;
@@ -63,6 +64,20 @@ export interface ResultRecord {
   cookie_content: string | null;
   formatted_output: string | null;
   nftoken_data: any;
+}
+
+export interface GenerationHistoryRecord {
+  id: number;
+  result_id: number;
+  generated_at: string;
+  was_live: boolean;
+  status: string;
+  plan_key: string | null;
+  plan_name: string | null;
+  country: string | null;
+  email: string | null;
+  reason: string | null;
+  account_info: any;
 }
 
 export interface AppConfig {
@@ -178,7 +193,7 @@ export async function getDefaultConfig(): Promise<AppConfig> {
   return res.json();
 }
 
-export async function checkHealth(): Promise<{ status: string; database: string }> {
+export async function checkHealth(): Promise<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number } }> {
   const res = await fetch(`${API_BASE}/api/health`);
   if (!res.ok) throw new Error("Health check failed");
   return res.json();
@@ -227,6 +242,26 @@ export async function generateAccount(
   return res.json();
 }
 
+/** Recheck a single stored hit by ID. */
+export async function recheckHit(
+  id: number,
+  proxies: string,
+  config: Partial<AppConfig>,
+  threads: number,
+  autoDelete: boolean
+): Promise<{ id: number; isLive: boolean; status: string; reason?: string; autoDeleted: boolean }> {
+  const res = await fetch(`${API_BASE}/api/recheck/${id}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proxies, config, threads, autoDelete }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to recheck hit" }));
+    throw new Error(err.error || "Failed to recheck hit");
+  }
+  return res.json();
+}
+
 /** Get country breakdown of all hits. */
 export async function getCountryBreakdown(): Promise<Array<{ country: string; count: number; hits: number; free: number }>> {
   const res = await fetch(`${API_BASE}/api/country-breakdown`);
@@ -239,6 +274,34 @@ export async function getHitLogs(limit = 50, offset = 0): Promise<{ logs: Result
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const res = await fetch(`${API_BASE}/api/hit-logs?${params}`);
   if (!res.ok) throw new Error("Failed to fetch hit logs");
+  return res.json();
+}
+
+/** Search and filter hit logs by country, plan, or email. */
+export async function searchHitLogs(
+  filters: {
+    country?: string;
+    plan?: string;
+    email?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{ logs: ResultRecord[]; total: number }> {
+  const params = new URLSearchParams();
+  if (filters.country && filters.country !== "all") params.set("country", filters.country);
+  if (filters.plan && filters.plan !== "all") params.set("plan", filters.plan);
+  if (filters.email && filters.email.trim() !== "") params.set("email", filters.email.trim());
+  params.set("limit", String(filters.limit || 50));
+  params.set("offset", String(filters.offset || 0));
+  const res = await fetch(`${API_BASE}/api/hit-logs/search?${params}`);
+  if (!res.ok) throw new Error("Failed to search hit logs");
+  return res.json();
+}
+
+/** Get filter options for hit logs. */
+export async function getHitLogFilters(): Promise<{ countries: string[]; plans: string[] }> {
+  const res = await fetch(`${API_BASE}/api/hit-logs/filters`);
+  if (!res.ok) throw new Error("Failed to fetch hit log filters");
   return res.json();
 }
 
@@ -278,6 +341,83 @@ export function subscribeToDashboardEvents(
   return es;
 }
 
+/** Get stale hits count. */
+export async function getStaleHits(days = 7): Promise<{ count: number; days: number }> {
+  const params = new URLSearchParams({ days: String(days) });
+  const res = await fetch(`${API_BASE}/api/stale-hits?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch stale hits");
+  return res.json();
+}
+
+/** Cleanup stale hits. */
+export async function cleanupStaleHits(days = 7, autoDelete = true): Promise<{
+  runId: string;
+  checked: number;
+  live: number;
+  dead: number;
+  deleted: number;
+  errors: number;
+  completedAt: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/stale-hits/cleanup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ days, autoDelete }),
+  });
+  if (!res.ok) throw new Error("Failed to cleanup stale hits");
+  return res.json();
+}
+
+/** Get account generation history. */
+export async function getGenerationHistory(limit = 50, offset = 0): Promise<{ history: GenerationHistoryRecord[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const res = await fetch(`${API_BASE}/api/generation-history?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch generation history");
+  return res.json();
+}
+
+/** Get health monitor status. */
+export async function getHealthMonitorStatus(): Promise<{ status: { running: boolean; intervalHours: number } }> {
+  const res = await fetch(`${API_BASE}/api/health-monitor`);
+  if (!res.ok) throw new Error("Failed to fetch health monitor status");
+  return res.json();
+}
+
+/** Configure health monitor. */
+export async function configureHealthMonitor(
+  enabled: boolean,
+  intervalHours: number,
+  deleteDeadCookies: boolean,
+  threads: number
+): Promise<{ status: { running: boolean; intervalHours: number } }> {
+  const res = await fetch(`${API_BASE}/api/health-monitor`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, intervalHours, deleteDeadCookies, threads }),
+  });
+  if (!res.ok) throw new Error("Failed to configure health monitor");
+  return res.json();
+}
+
+/** Run health monitor once immediately. */
+export async function runHealthCheckNow(deleteDeadCookies = true, threads = 30): Promise<{
+  runId: string;
+  checked: number;
+  live: number;
+  dead: number;
+  deleted: number;
+  errors: number;
+  completedAt: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/health-monitor/run-now`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deleteDeadCookies, threads }),
+  });
+  if (!res.ok) throw new Error("Failed to run health check");
+  return res.json();
+}
+
 export interface GeneratedAccount {
   runId: string;
   result: {
@@ -288,7 +428,7 @@ export interface GeneratedAccount {
     email?: string;
     reason?: string;
     onHold?: boolean;
-    accountInfo?: any;
+    accountInfo?: Record<string, any>;
     cookieContent?: string;
     formattedOutput?: string;
     nfTokenData?: { token: string; expires_at_utc: string } | null;

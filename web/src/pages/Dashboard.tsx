@@ -16,6 +16,15 @@ import {
   Mail,
   Clock,
   Trash2,
+  Search,
+  X,
+  Shield,
+  History,
+  Monitor,
+  Download,
+  Terminal,
+  LayoutList,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,10 +33,17 @@ import { Progress } from "@/components/ui/progress";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import {
   getStats,
   checkHealth,
@@ -39,17 +55,26 @@ import {
   deduplicateHits,
   generateAccount,
   subscribeToDashboardEvents,
+  searchHitLogs,
+  getHitLogFilters,
+  recheckHit,
+  getStaleHits,
+  cleanupStaleHits,
+  getGenerationHistory,
+  getHealthMonitorStatus,
+  configureHealthMonitor,
+  runHealthCheckNow,
   type ResultRecord,
   type GeneratedAccount,
+  type GenerationHistoryRecord,
 } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
-  const [health, setHealth] = useState<{ status: string; database: string } | null>(null);
+  const [health, setHealth] = useState<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number } } | null>(null);
   const [loading, setLoading] = useState(true);
   const [recheckCount, setRecheckCount] = useState<number | null>(null);
   const [isRechecking, setIsRechecking] = useState(false);
@@ -58,20 +83,33 @@ export default function Dashboard() {
   >([]);
   const [hitLogs, setHitLogs] = useState<ResultRecord[]>([]);
   const [hitLogsTotal, setHitLogsTotal] = useState(0);
+  const [filters, setFilters] = useState({ country: "all", plan: "all", email: "" });
+  const [filterOptions, setFilterOptions] = useState<{ countries: string[]; plans: string[] }>({ countries: [], plans: [] });
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedAccount, setGeneratedAccount] = useState<GeneratedAccount | null>(null);
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [staleHits, setStaleHits] = useState<{ count: number; days: number } | null>(null);
+  const [isCleaningStale, setIsCleaningStale] = useState(false);
+  const [generationHistory, setGenerationHistory] = useState<GenerationHistoryRecord[]>([]);
+  const [generationHistoryTotal, setGenerationHistoryTotal] = useState(0);
+  const [healthMonitor, setHealthMonitor] = useState<{ running: boolean; intervalHours: number } | null>(null);
+  const [isHealthCheckRunning, setIsHealthCheckRunning] = useState(false);
+  const [recheckingHitId, setRecheckingHitId] = useState<number | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardEventSourceRef = useRef<EventSource | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const [s, h, rc, cb, hl] = await Promise.all([
+      const [s, h, rc, cb, hl, fo, gh, st, hm] = await Promise.all([
         getStats().catch(() => null),
         checkHealth().catch(() => null),
         getRecheckCount().catch(() => null),
         getCountryBreakdown().catch(() => []),
-        getHitLogs(20, 0).catch(() => ({ logs: [], total: 0 })),
+        searchHitLogs({ ...filters, limit: 20, offset: 0 }).catch(() => ({ logs: [], total: 0 })),
+        getHitLogFilters().catch(() => ({ countries: [], plans: [] })),
+        getGenerationHistory(10, 0).catch(() => ({ history: [], total: 0 })),
+        getStaleHits(7).catch(() => ({ count: 0, days: 7 })),
+        getHealthMonitorStatus().catch(() => ({ status: { running: false, intervalHours: 0 } })),
       ]);
       setStats(s);
       setHealth(h);
@@ -79,10 +117,15 @@ export default function Dashboard() {
       setCountryBreakdown(cb as typeof countryBreakdown);
       setHitLogs((hl as any).logs);
       setHitLogsTotal((hl as any).total);
+      setFilterOptions(fo as typeof filterOptions);
+      setGenerationHistory((gh as any).history);
+      setGenerationHistoryTotal((gh as any).total);
+      setStaleHits(st as { count: number; days: number });
+      setHealthMonitor((hm as any).status);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filters]);
 
   useEffect(() => {
     // Auto-deduplicate on first load
@@ -172,11 +215,74 @@ export default function Dashboard() {
     }
   };
 
+  const handleRecheckHit = async (log: ResultRecord, autoDelete = true) => {
+    setRecheckingHitId(log.id);
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const result = await recheckHit(log.id, "", config, 30, autoDelete);
+      if (result.isLive) {
+        toast.success("Account is live", { description: log.email || undefined });
+      } else if (result.autoDeleted) {
+        toast.error("Account dead — deleted", { description: log.email || undefined });
+        setShowAccountModal(false);
+      } else {
+        toast.warning("Account dead", { description: result.reason || "Not live" });
+      }
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to recheck hit");
+    } finally {
+      setRecheckingHitId(null);
+    }
+  };
+
+  const handleCleanupStale = async () => {
+    setIsCleaningStale(true);
+    try {
+      const summary = await cleanupStaleHits(7, true);
+      toast.success(`Stale cleanup complete`, {
+        description: `${summary.deleted} dead deleted, ${summary.live} still live`,
+      });
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to cleanup stale hits");
+    } finally {
+      setIsCleaningStale(false);
+    }
+  };
+
+  const handleToggleHealthMonitor = async () => {
+    try {
+      const enabled = !healthMonitor?.running;
+      const result = await configureHealthMonitor(enabled, 24, true, 30);
+      setHealthMonitor(result.status);
+      toast.success(enabled ? "Auto-health monitoring enabled" : "Auto-health monitoring disabled");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to configure health monitor");
+    }
+  };
+
+  const handleRunHealthCheckNow = async () => {
+    setIsHealthCheckRunning(true);
+    try {
+      const summary = await runHealthCheckNow(true, 30);
+      toast.success(`Health check complete`, {
+        description: `${summary.deleted} dead deleted, ${summary.live} live`,
+      });
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to run health check");
+    } finally {
+      setIsHealthCheckRunning(false);
+    }
+  };
+
   const totalChecked = stats?.totalResults || 0;
   const activeCookies = stats?.activeCookies || 0;
   const totalHits = stats?.totalHits || 0;
   const totalCookiesStored = stats?.totalCookiesStored || 0;
   const successRate = totalChecked > 0 ? ((totalHits) / totalChecked * 100).toFixed(1) : "0";
+  const staleCount = staleHits?.count || 0;
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto animate-fade-in">
@@ -237,6 +343,12 @@ export default function Dashboard() {
           <Cookie className="h-3 w-3" />
           Cookies Stored: {totalCookiesStored}
         </div>
+        {staleCount > 0 && (
+          <div className="flex items-center gap-2 rounded-full bg-yellow-500/10 px-3 py-1.5 text-xs font-medium text-yellow-500">
+            <AlertCircle className="h-3 w-3" />
+            {staleCount} stale (7d+)
+          </div>
+        )}
       </div>
 
       {/* Stats Grid */}
@@ -322,23 +434,123 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Real-time Cookie Hit Logs */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold">Cookie Hit Logs</h2>
-            <Badge variant="secondary" className="text-xs">{hitLogsTotal} total stored</Badge>
+      {/* Health Monitor Controls */}
+      <Card className="mb-8 border-primary/20">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Monitor className="h-5 w-5 text-primary" />
+            Auto-Health Monitor
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm text-muted-foreground">
+                Status: <span className={healthMonitor?.running ? "text-green-500" : "text-yellow-500"}>
+                  {healthMonitor?.running ? "Running (every 24h)" : "Disabled"}
+                </span>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Automatically rechecks all stored hits and deletes dead cookies.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRunHealthCheckNow}
+                disabled={isHealthCheckRunning}
+              >
+                {isHealthCheckRunning ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Run Now
+              </Button>
+              <Button
+                variant={healthMonitor?.running ? "destructive" : "default"}
+                size="sm"
+                onClick={handleToggleHealthMonitor}
+              >
+                {healthMonitor?.running ? "Disable" : "Enable"}
+              </Button>
+            </div>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => loadData()}
-            className="text-xs text-muted-foreground"
-          >
-            <RefreshCw className="h-3 w-3 mr-1" />
-            Refresh
-          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Cookie Hit Logs with Search & Filter */}
+      <div className="mb-8">
+        <div className="flex flex-col gap-4 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-semibold">Cookie Hit Logs</h2>
+              <Badge variant="secondary" className="text-xs">{hitLogsTotal} total stored</Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              {staleCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCleanupStale}
+                  disabled={isCleaningStale}
+                >
+                  {isCleaningStale ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3 mr-1" />
+                  )}
+                  Cleanup {staleCount} stale
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => loadData()}
+                className="text-xs text-muted-foreground"
+              >
+                <RefreshCw className="h-3 w-3 mr-1" />
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search by email..."
+                value={filters.email}
+                onChange={(e) => setFilters((f) => ({ ...f, email: e.target.value }))}
+                className="pl-9"
+              />
+            </div>
+            <Select value={filters.country} onValueChange={(v) => setFilters((f) => ({ ...f, country: v }))}>
+              <SelectTrigger>
+                <SelectValue placeholder="All countries" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All countries</SelectItem>
+                {filterOptions.countries.map((c) => (
+                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filters.plan} onValueChange={(v) => setFilters((f) => ({ ...f, plan: v }))}>
+              <SelectTrigger>
+                <SelectValue placeholder="All plans" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All plans</SelectItem>
+                {filterOptions.plans.map((p) => (
+                  <SelectItem key={p} value={p}>{p.replace(/_/g, " ")}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
+
         {loading ? (
           <div className="space-y-2">
             {[1, 2, 3, 4, 5].map((i) => (
@@ -348,7 +560,12 @@ export default function Dashboard() {
         ) : hitLogs.length > 0 ? (
           <div className="space-y-2">
             {hitLogs.map((log) => (
-              <HitLogRow key={log.id} log={log} />
+              <HitLogRow
+                key={log.id}
+                log={log}
+                isRechecking={recheckingHitId === log.id}
+                onRecheck={() => handleRecheckHit(log, true)}
+              />
             ))}
           </div>
         ) : (
@@ -359,6 +576,70 @@ export default function Dashboard() {
               <p className="text-xs text-muted-foreground mt-1">
                 Run a check to start collecting hits in the database
               </p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Account Generation History */}
+      <div className="mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <History className="h-5 w-5 text-primary" />
+          <h2 className="text-xl font-semibold">Account Generation History</h2>
+          <Badge variant="secondary" className="text-xs">{generationHistoryTotal} generated</Badge>
+        </div>
+        {generationHistory.length > 0 ? (
+          <div className="space-y-2">
+            {generationHistory.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center gap-3 rounded-lg border border-border bg-card p-3"
+              >
+                <div className={cn(
+                  "flex h-10 w-10 items-center justify-center rounded-lg shrink-0",
+                  entry.was_live ? "bg-green-500/10" : "bg-red-500/10"
+                )}>
+                  {entry.was_live ? (
+                    <CheckCircle2 className="h-5 w-5 text-green-500" />
+                  ) : (
+                    <XCircle className="h-5 w-5 text-red-500" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {entry.plan_name && (
+                      <Badge variant="secondary" className="text-xs">{entry.plan_name}</Badge>
+                    )}
+                    {entry.country && (
+                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Globe className="h-3 w-3" />
+                        {entry.country}
+                      </span>
+                    )}
+                    {entry.was_live ? (
+                      <Badge className="bg-green-500/10 text-green-500 text-xs border-0">Live</Badge>
+                    ) : (
+                      <Badge className="bg-red-500/10 text-red-500 text-xs border-0">Dead</Badge>
+                    )}
+                  </div>
+                  {entry.email && (
+                    <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5 truncate">
+                      <Mail className="h-3 w-3 shrink-0" />
+                      {entry.email}
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground shrink-0">
+                  {new Date(entry.generated_at).toLocaleString()}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-8">
+              <History className="h-8 w-8 text-muted-foreground mb-2" />
+              <p className="text-sm text-muted-foreground">No accounts generated yet</p>
             </CardContent>
           </Card>
         )}
@@ -410,10 +691,24 @@ function CountryRow({ country, count, hits, free, total }: { country: string; co
   );
 }
 
-function HitLogRow({ log }: { log: ResultRecord }) {
+function HitLogRow({
+  log,
+  isRechecking,
+  onRecheck,
+}: {
+  log: ResultRecord;
+  isRechecking: boolean;
+  onRecheck: () => void;
+}) {
   const icon = log.status === "success" ? <CheckCircle2 className="h-5 w-5 text-green-500" /> :
     log.status === "free" ? <CheckCircle2 className="h-5 w-5 text-blue-500" /> :
     <XCircle className="h-5 w-5 text-red-500" />;
+
+  const isStale = (() => {
+    const lastVerified = new Date(log.last_verified_at || log.checked_at);
+    const daysSince = (Date.now() - lastVerified.getTime()) / (1000 * 60 * 60 * 24);
+    return daysSince >= 7;
+  })();
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3 hover:border-primary/30 transition-all">
@@ -439,6 +734,12 @@ function HitLogRow({ log }: { log: ResultRecord }) {
               On Hold
             </Badge>
           )}
+          {isStale && (
+            <Badge variant="outline" className="text-xs text-yellow-500 border-yellow-500/30">
+              <Clock className="h-3 w-3 mr-1" />
+              Stale
+            </Badge>
+          )}
         </div>
         {log.email && (
           <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5 truncate">
@@ -447,10 +748,20 @@ function HitLogRow({ log }: { log: ResultRecord }) {
           </div>
         )}
       </div>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
-        <Clock className="h-3 w-3" />
-        {new Date(log.checked_at).toLocaleString()}
-      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onRecheck}
+        disabled={isRechecking}
+        className="shrink-0"
+      >
+        {isRechecking ? (
+          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+        ) : (
+          <RefreshCw className="h-3 w-3 mr-1" />
+        )}
+        Recheck
+      </Button>
     </div>
   );
 }
@@ -467,15 +778,7 @@ function AccountModal({
   if (!account) return null;
 
   const result = account.result;
-  // Merge result-level fields into accountInfo so the modal always has basics
-  const info: Record<string, any> = {
-    ...(result.accountInfo || {}),
-    email: result.accountInfo?.email || result.email || result.accountInfo?.accountEmail || undefined,
-    countryOfSignup: result.accountInfo?.countryOfSignup || result.country || undefined,
-    localizedPlanName: result.accountInfo?.localizedPlanName || result.planName || undefined,
-    planKey: result.planKey || result.accountInfo?.planKey || undefined,
-    status: result.status || undefined,
-  };
+  const info = { ...(result.accountInfo || {}) };
   const isLive = result.isLive;
 
   const copyToClipboard = (text: string) => {
@@ -483,11 +786,15 @@ function AccountModal({
     toast.success("Copied to clipboard");
   };
 
-  // All fields we want to display with friendly labels (Name intentionally removed)
+  const planLabel = result.planName || info.localizedPlanName || info.planKey || "Unknown";
+  const country = result.country || info.countryOfSignup || "Unknown";
+  const email = result.email || info.email || "Unknown";
+
   const allFields = [
     { key: "email", label: "Email" },
     { key: "countryOfSignup", label: "Country" },
     { key: "localizedPlanName", label: "Plan" },
+    { key: "planKey", label: "Plan Key" },
     { key: "planPrice", label: "Price" },
     { key: "maxStreams", label: "Max Streams" },
     { key: "videoQuality", label: "Quality" },
@@ -498,41 +805,67 @@ function AccountModal({
     { key: "membershipStatus", label: "Membership" },
     { key: "holdStatus", label: "Hold Status" },
     { key: "emailVerified", label: "Email Verified" },
+    { key: "phoneNumber", label: "Phone" },
+    { key: "phoneVerified", label: "Phone Verified" },
+    { key: "isExtraMemberAccount", label: "Extra Member" },
+    { key: "showExtraMemberSection", label: "Extra Member Section" },
     { key: "userGuid", label: "User GUID" },
+    { key: "status", label: "Status" },
+    { key: "reason", label: "Reason" },
   ];
 
   const visibleFields = allFields
     .map((f) => ({ ...f, value: info[f.key] }))
     .filter((f) => {
       const value = f.value;
-      return value !== null && value !== undefined && value !== "" && value !== "null";
+      return value !== null && value !== undefined && value !== "" && value !== "null" && value !== "undefined";
     });
-
-  // Extract profile names from the various possible fields
-  const profileNames = extractProfileNames(info.profiles || info.profilesDisplay || "");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg w-[92%] max-h-[85dvh] p-0 gap-0 overflow-hidden flex flex-col rounded-xl border border-border/60 shadow-2xl bg-background/95 backdrop-blur-md">
-        <DialogHeader className="px-4 pt-4 pb-3 sm:px-6 border-b shrink-0 text-left">
-          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg text-left">
-            <Sparkles className="h-5 w-5 text-primary shrink-0" />
-            Generated Account
-          </DialogTitle>
-          <DialogDescription className="text-xs text-left">
+      <DialogContent className="sm:max-w-md w-[94%] max-h-[90dvh] p-0 gap-0 overflow-hidden flex flex-col rounded-2xl border border-border/60 shadow-2xl bg-[#0f0f12]/95 backdrop-blur-xl">
+        <div className="sr-only">
+          <DialogTitle>Generated Account</DialogTitle>
+          <DialogDescription>
             Account generated from stored hit database and rechecked for liveness
           </DialogDescription>
-        </DialogHeader>
+        </div>
+
+        {/* Floating header */}
+        <div className="relative px-4 pt-4 pb-3 sm:px-5 border-b border-border/50 shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge className="bg-primary/20 text-primary border-primary/30 hover:bg-primary/20 px-3 py-1 text-xs font-bold uppercase tracking-wide">
+                {planLabel}
+              </Badge>
+              <Badge variant="secondary" className="px-3 py-1 text-xs font-semibold uppercase">
+                {country}
+              </Badge>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full"
+              onClick={() => onOpenChange(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
+            <Mail className="h-3 w-3" />
+            <span className="truncate">{email}</span>
+          </div>
+        </div>
 
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-4 sm:p-5 space-y-4">
-            {/* Live Status Banner */}
+            {/* Live status banner */}
             <div
               className={cn(
-                "flex items-center gap-3 rounded-lg p-3",
+                "flex items-center gap-3 rounded-xl p-3 border",
                 isLive
-                  ? "bg-green-500/10 border border-green-500/30"
-                  : "bg-red-500/10 border border-red-500/30"
+                  ? "bg-green-500/10 border-green-500/30"
+                  : "bg-red-500/10 border-red-500/30"
               )}
             >
               {isLive ? (
@@ -541,12 +874,7 @@ function AccountModal({
                 <XCircle className="h-6 w-6 text-red-500 shrink-0" />
               )}
               <div className="min-w-0">
-                <div
-                  className={cn(
-                    "font-semibold text-sm",
-                    isLive ? "text-green-500" : "text-red-500"
-                  )}
-                >
+                <div className={cn("font-bold text-sm", isLive ? "text-green-500" : "text-red-500")}>
                   {isLive ? "Account is LIVE" : "Account is NOT live"}
                 </div>
                 <div className="text-xs text-muted-foreground truncate">
@@ -555,47 +883,42 @@ function AccountModal({
               </div>
             </div>
 
-            {/* Netflix Profiles */}
-            {profileNames.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Netflix Profiles ({profileNames.length})
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {profileNames.map((name, i) => (
-                    <div
-                      key={`${name}-${i}`}
-                      className="flex items-center gap-2 rounded-full bg-secondary/80 px-3 py-1.5 text-sm border border-border/50"
-                    >
-                      <Avatar className="h-5 w-5">
-                        <AvatarFallback className="text-[10px] bg-primary/10 text-primary">
-                          {name.slice(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="font-medium truncate max-w-[140px]">{name}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Action toolbar */}
+            <div className="grid grid-cols-4 gap-2">
+              <ActionButton
+                icon={<Copy className="h-4 w-4" />}
+                label="Copy"
+                onClick={() => copyToClipboard(result.cookieContent || "")}
+              />
+              <ActionButton
+                icon={<Download className="h-4 w-4" />}
+                label="Download"
+                onClick={() => downloadText(result.cookieContent || "", `cookie-${email}.txt`)}
+              />
+              <ActionButton
+                icon={<LayoutList className="h-4 w-4" />}
+                label="Details"
+                onClick={() => {}}
+                active
+              />
+              <ActionButton
+                icon={<Terminal className="h-4 w-4" />}
+                label="Cookie"
+                onClick={() => {}}
+              />
+            </div>
 
             {/* Account Info List */}
-            {visibleFields.length > 0 ? (
-              <div className="space-y-1">
-                {visibleFields.map((f) => (
-                  <InfoRow key={f.key} label={f.label} value={String(f.value)} />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                No detailed account info available from the recheck.
-              </div>
-            )}
+            <div className="space-y-1">
+              {visibleFields.map((f) => (
+                <InfoRow key={f.key} label={f.label} value={String(f.value)} />
+              ))}
+            </div>
 
             {/* NFToken Redirect Buttons */}
             {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
               <div className="space-y-3">
-                <div className="flex items-center gap-2 text-sm font-medium">
+                <div className="flex items-center gap-2 text-sm font-semibold">
                   <Zap className="h-4 w-4 text-primary shrink-0" />
                   NFToken Login Links
                 </div>
@@ -608,7 +931,7 @@ function AccountModal({
                       rel="noopener noreferrer"
                       className="block"
                     >
-                      <Button variant="outline" className="w-full justify-start h-11 text-sm">
+                      <Button variant="outline" className="w-full justify-start h-11 text-sm border-primary/30 hover:bg-primary/10 hover:text-primary">
                         <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
                         {label}
                       </Button>
@@ -627,7 +950,7 @@ function AccountModal({
             {result.cookieContent && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">Cookie Content</span>
+                  <span className="text-sm font-semibold">Cookie Content</span>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -638,7 +961,7 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-36 sm:max-h-40 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-36 sm:max-h-40 font-mono">
                   {result.cookieContent}
                 </pre>
               </div>
@@ -648,7 +971,7 @@ function AccountModal({
             {result.formattedOutput && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">Formatted Output</span>
+                  <span className="text-sm font-semibold">Formatted Output</span>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -659,7 +982,7 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-40 sm:max-h-56 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40 sm:max-h-56 font-mono">
                   {result.formattedOutput}
                 </pre>
               </div>
@@ -668,8 +991,8 @@ function AccountModal({
         </ScrollArea>
 
         {/* Footer close button */}
-        <div className="border-t p-3 sm:p-4 shrink-0">
-          <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
+        <div className="border-t border-border/50 p-3 sm:p-4 shrink-0">
+          <Button className="w-full bg-primary hover:bg-primary/90" onClick={() => onOpenChange(false)}>
             Close
           </Button>
         </div>
@@ -678,20 +1001,49 @@ function AccountModal({
   );
 }
 
-function extractProfileNames(raw: string | string[] | null | undefined): string[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.filter((n) => typeof n === "string" && n.trim() !== "");
-  return raw
-    .split(/,|\n/)
-    .map((n) => n.trim())
-    .filter((n) => n !== "" && n.toLowerCase() !== "null");
+function ActionButton({
+  icon,
+  label,
+  onClick,
+  active,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-center gap-1 rounded-xl p-2 transition-all",
+        active
+          ? "bg-primary/15 text-primary border border-primary/30"
+          : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent"
+      )}
+    >
+      {icon}
+      <span className="text-[10px] font-medium">{label}</span>
+    </button>
+  );
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col border-b border-border/50 py-2.5 gap-0.5">
-      <span className="text-muted-foreground text-xs">{label}</span>
-      <span className="font-medium text-sm text-foreground break-words">{String(value)}</span>
+    <div className="flex items-center justify-between border-b border-border/40 py-2 gap-3">
+      <span className="text-muted-foreground text-xs shrink-0">{label}</span>
+      <span className="font-medium text-sm text-foreground break-all text-right">{String(value)}</span>
     </div>
   );
+}
+
+function downloadText(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast.success("Downloaded");
 }
