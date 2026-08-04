@@ -22,12 +22,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   getStats,
   checkHealth,
@@ -43,6 +43,7 @@ import {
   type GeneratedAccount,
 } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -482,9 +483,8 @@ function AccountModal({
     toast.success("Copied to clipboard");
   };
 
-  // All fields we want to display with friendly labels
+  // All fields we want to display with friendly labels (Name intentionally removed)
   const allFields = [
-    { key: "accountOwnerName", label: "Name" },
     { key: "email", label: "Email" },
     { key: "countryOfSignup", label: "Country" },
     { key: "localizedPlanName", label: "Plan" },
@@ -498,8 +498,6 @@ function AccountModal({
     { key: "membershipStatus", label: "Membership" },
     { key: "holdStatus", label: "Hold Status" },
     { key: "emailVerified", label: "Email Verified" },
-    { key: "profilesDisplay", label: "Profiles" },
-    { key: "profiles", label: "Profiles" },
     { key: "userGuid", label: "User GUID" },
   ];
 
@@ -510,28 +508,28 @@ function AccountModal({
       return value !== null && value !== undefined && value !== "" && value !== "null";
     });
 
+  // Extract profile names from the various possible fields
+  const profileNames = extractProfileNames(info.profiles || info.profilesDisplay || "");
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="bottom"
-        className="w-full h-[92dvh] max-h-[92dvh] sm:h-[85vh] sm:max-w-2xl sm:mx-auto sm:rounded-t-xl rounded-t-2xl p-0 gap-0 overflow-hidden flex flex-col"
-      >
-        <SheetHeader className="px-4 pt-5 pb-3 sm:px-6 border-b shrink-0">
-          <SheetTitle className="flex items-center gap-2 text-lg sm:text-xl text-left">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg w-[92%] max-h-[85dvh] p-0 gap-0 overflow-hidden flex flex-col rounded-xl border border-border/60 shadow-2xl bg-background/95 backdrop-blur-md">
+        <DialogHeader className="px-4 pt-4 pb-3 sm:px-6 border-b shrink-0 text-left">
+          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg text-left">
             <Sparkles className="h-5 w-5 text-primary shrink-0" />
             Generated Account
-          </SheetTitle>
-          <SheetDescription className="text-xs sm:text-sm text-left">
+          </DialogTitle>
+          <DialogDescription className="text-xs text-left">
             Account generated from stored hit database and rechecked for liveness
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
         <ScrollArea className="flex-1 min-h-0">
-          <div className="p-4 sm:p-6 space-y-5">
+          <div className="p-4 sm:p-5 space-y-4">
             {/* Live Status Banner */}
             <div
               className={cn(
-                "flex items-center gap-3 rounded-lg p-3 sm:p-4",
+                "flex items-center gap-3 rounded-lg p-3",
                 isLive
                   ? "bg-green-500/10 border border-green-500/30"
                   : "bg-red-500/10 border border-red-500/30"
@@ -545,7 +543,7 @@ function AccountModal({
               <div className="min-w-0">
                 <div
                   className={cn(
-                    "font-semibold text-sm sm:text-base",
+                    "font-semibold text-sm",
                     isLive ? "text-green-500" : "text-red-500"
                   )}
                 >
@@ -556,6 +554,30 @@ function AccountModal({
                 </div>
               </div>
             </div>
+
+            {/* Netflix Profiles */}
+            {profileNames.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Netflix Profiles ({profileNames.length})
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {profileNames.map((name, i) => (
+                    <div
+                      key={`${name}-${i}`}
+                      className="flex items-center gap-2 rounded-full bg-secondary/80 px-3 py-1.5 text-sm border border-border/50"
+                    >
+                      <Avatar className="h-5 w-5">
+                        <AvatarFallback className="text-[10px] bg-primary/10 text-primary">
+                          {name.slice(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="font-medium truncate max-w-[140px]">{name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Account Info List */}
             {visibleFields.length > 0 ? (
@@ -616,7 +638,7 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-40 sm:max-h-48 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-36 sm:max-h-40 font-mono">
                   {result.cookieContent}
                 </pre>
               </div>
@@ -637,7 +659,7 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-48 sm:max-h-64 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-md p-3 overflow-auto max-h-40 sm:max-h-56 font-mono">
                   {result.formattedOutput}
                 </pre>
               </div>
@@ -651,9 +673,18 @@ function AccountModal({
             Close
           </Button>
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
+}
+
+function extractProfileNames(raw: string | string[] | null | undefined): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter((n) => typeof n === "string" && n.trim() !== "");
+  return raw
+    .split(/,|\n/)
+    .map((n) => n.trim())
+    .filter((n) => n !== "" && n.toLowerCase() !== "null");
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
