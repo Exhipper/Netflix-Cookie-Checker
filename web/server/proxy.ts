@@ -23,7 +23,7 @@ export function parseProxyLine(line: string): ProxyEntry | null {
   if (!line || line.startsWith("#") || line.startsWith("//")) return null;
 
   // Normalize scheme
-  line = line.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/+/, "$1://");
+  line = line.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\+/, "$1://");
   line = line.replace(/\s+/g, " ").trim();
 
   // scheme://user:pass@host:port
@@ -115,24 +115,38 @@ function parseSpaceLine(line: string): ProxyEntry[] {
   return proxies;
 }
 
-export function parseProxies(text: string, hint: ProxyFormatHint = "default"): ProxyEntry[] {
+export function parseProxies(
+  text: string,
+  hint: ProxyFormatHint = "default",
+  maxEntries?: number
+): ProxyEntry[] {
   const proxies: ProxyEntry[] = [];
   const seen = new Set<string>();
-  const dedupe = (entry: ProxyEntry) => {
+
+  const canAdd = () => !maxEntries || proxies.length < maxEntries;
+  const dedupe = (entry: ProxyEntry): boolean => {
+    if (!canAdd()) return false;
     const key = entry.http || entry.https;
-    if (seen.has(key)) return;
+    if (seen.has(key)) return true;
     seen.add(key);
     proxies.push(entry);
+    return true;
   };
 
   for (const rawLine of text.split("\n")) {
+    if (!canAdd()) break;
+
     const line = rawLine.trim();
     if (!line || line.startsWith("#") || line.startsWith("//")) continue;
 
     if (hint === "space") {
-      for (const p of parseSpaceLine(line)) dedupe(p);
+      for (const p of parseSpaceLine(line)) {
+        if (!dedupe(p)) break;
+      }
     } else if (hint === "colon") {
-      for (const p of parseColonLine(line)) dedupe(p);
+      for (const p of parseColonLine(line)) {
+        if (!dedupe(p)) break;
+      }
     } else {
       // Default: try standard line parsing first, then space tokens, then colon tokens.
       const standard = parseProxyLine(line);
@@ -141,9 +155,13 @@ export function parseProxies(text: string, hint: ProxyFormatHint = "default"): P
       } else {
         const spaceParsed = parseSpaceLine(line);
         if (spaceParsed.length > 0) {
-          for (const p of spaceParsed) dedupe(p);
+          for (const p of spaceParsed) {
+            if (!dedupe(p)) break;
+          }
         } else {
-          for (const p of parseColonLine(line)) dedupe(p);
+          for (const p of parseColonLine(line)) {
+            if (!dedupe(p)) break;
+          }
         }
       }
     }

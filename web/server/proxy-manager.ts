@@ -27,13 +27,20 @@ const VALIDATION_TIMEOUT_MS = 8000;
 const VALIDATION_URL = "https://httpbin.org/ip";
 const MAX_FAILURES = 3; // mark dead after 3 consecutive failures
 const TARGET_VALIDATED = 300; // stop validating once we have enough live proxies
-const VALIDATION_CONCURRENCY = 50; // validate proxies in parallel
-const MAX_VALIDATION_PER_SOURCE = 1500; // don't try to validate every proxy from huge lists
+
+// Memory-safe tuning: free proxy lists can be huge, so we cap everything.
+const FETCH_CONCURRENCY = 5; // fetch sources in small batches
+const MAX_SOURCE_BODY_BYTES = 1024 * 1024; // 1 MB cap per source response
+const MAX_ENTRIES_PER_SOURCE = 150; // parse at most this many proxies from one source
+const MAX_TOTAL_PARSED = 4000; // total unique candidates to validate across all sources
+const VALIDATION_CONCURRENCY = 16; // lower than before to reduce heap pressure
+const MAX_POOL_SIZE = 600; // keep the validated pool from growing forever
 
 let validatedPool: ValidatedProxy[] = [];
 let currentIndex = 0;
 let isFetching = false;
 let sourceTimers: Map<string, NodeJS.Timeout> = new Map();
+const textDecoder = new TextDecoder();
 
 /** Expand date templates in proxy URLs (e.g. {YYYY}, {MM}, {DD}, {HH/4}). */
 function expandDateTemplates(url: string): string {
@@ -68,7 +75,7 @@ const PROXY_SOURCES: ProxySource[] = [
   { url: "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", intervalHours: 1, enabled: true },
   { url: "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/https/data.txt", intervalHours: 1, enabled: true },
   { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", intervalHours: 1, enabled: true },
-  { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", intervalHours: 2, enabled: false }, // socks4 generally not usable for httpbin
+  { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", intervalHours: 2, enabled: false },
   { url: "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt", intervalHours: 1, enabled: true },
   { url: "https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt", intervalHours: 2, enabled: true },
   { url: "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt", intervalHours: 2, enabled: true },
@@ -318,22 +325,50 @@ async function validateWithConcurrency(
   return validated;
 }
 
-/** Fetch a single proxy source and return parsed entries. */
+/** Fetch a single proxy source and return parsed entries. Response body is streamed with a byte cap. */
 async function fetchSource(source: ProxySource): Promise<ProxyEntry[]> {
   const url = expandDateTemplates(source.url);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
   try {
     const response = await undiciFetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0" },
-      signal: AbortSignal.timeout(20000),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
       console.warn(`[proxy-manager] Source failed ${response.status}: ${url}`);
       return [];
     }
-    const text = await response.text();
-    const parsed = parseProxies(text, source.formatHint || "default");
-    console.log(`[proxy-manager] Source ${url} parsed ${parsed.length} proxies`);
-    return parsed;
+
+    if (!response.body) {
+      const text = await response.text();
+      return parseProxies(text, source.formatHint || "default", MAX_ENTRIES_PER_SOURCE);
+    }
+
+    const reader = response.body.getReader();
+    let buffer = "";
+    let readBytes = 0;
+    let done = false;
+
+    while (!done && readBytes < MAX_SOURCE_BODY_BYTES) {
+      const { value, done: d } = await reader.read();
+      done = d || false;
+      if (value && value.length > 0) {
+        readBytes += value.byteLength;
+        buffer += textDecoder.decode(value, { stream: !done });
+      }
+    }
+
+    if (!done) {
+      reader.cancel().catch(() => {});
+    }
+    // Flush any remaining decoder state
+    buffer += textDecoder.decode();
+
+    return parseProxies(buffer, source.formatHint || "default", MAX_ENTRIES_PER_SOURCE);
   } catch (err: any) {
     if (err?.name === "AbortError") {
       console.warn(`[proxy-manager] Source timeout: ${url}`);
@@ -341,55 +376,58 @@ async function fetchSource(source: ProxySource): Promise<ProxyEntry[]> {
       console.warn(`[proxy-manager] Source error: ${url}`, err?.message || err);
     }
     return [];
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
-/** Fetch and validate proxies from all enabled remote sources. */
+/** Fetch and validate proxies from all enabled remote sources, throttled and capped. */
 export async function fetchAndValidateProxies(): Promise<ValidatedProxy[]> {
   if (isFetching) return validatedPool;
   isFetching = true;
 
   try {
     const enabledSources = PROXY_SOURCES.filter((s) => s.enabled);
-
-    // Fetch all sources in parallel
-    const sourceResults = await Promise.allSettled(
-      enabledSources.map((source) => fetchSource(source))
-    );
-
     const allEntries: ProxyEntry[] = [];
     const seenKeys = new Set<string>();
-    sourceResults.forEach((result, index) => {
-      if (result.status === "fulfilled") {
+
+    for (let i = 0; i < enabledSources.length; i += FETCH_CONCURRENCY) {
+      const batch = enabledSources.slice(i, i + FETCH_CONCURRENCY);
+      const results = await Promise.allSettled(batch.map((source) => fetchSource(source)));
+
+      for (let j = 0; j < batch.length; j++) {
+        const result = results[j];
+        if (result.status === "rejected") {
+          console.warn(`[proxy-manager] Failed source ${batch[j].url}: ${result.reason}`);
+          continue;
+        }
         for (const entry of result.value) {
+          if (allEntries.length >= MAX_TOTAL_PARSED) break;
           const { ip, port } = extractIpPort(entry);
           const key = `${ip}:${port}`;
           if (!key || key.includes("unknown") || seenKeys.has(key)) continue;
           seenKeys.add(key);
           allEntries.push(entry);
         }
-      } else {
-        console.warn(`[proxy-manager] Failed source ${enabledSources[index]?.url}: ${result.reason}`);
       }
-    });
+
+      if (allEntries.length >= MAX_TOTAL_PARSED) break;
+    }
 
     if (allEntries.length === 0) {
       console.warn("[proxy-manager] No proxies parsed from remote sources");
       return validatedPool;
     }
 
-    console.log(`[proxy-manager] Parsed ${allEntries.length} unique proxies from ${enabledSources.length} sources, validating with ${VALIDATION_CONCURRENCY} threads...`);
+    console.log(`[proxy-manager] Parsed ${allEntries.length} unique proxy candidates from ${enabledSources.length} sources, validating with ${VALIDATION_CONCURRENCY} threads...`);
 
-    // Validate concurrently with a worker pool; cap attempts per source to avoid burning time
-    const entriesToValidate = allEntries.slice(0, Math.min(allEntries.length, MAX_VALIDATION_PER_SOURCE * enabledSources.length));
-    const validated = await validateWithConcurrency(entriesToValidate, VALIDATION_CONCURRENCY, TARGET_VALIDATED);
+    const validated = await validateWithConcurrency(allEntries, VALIDATION_CONCURRENCY, TARGET_VALIDATED);
 
     console.log(`[proxy-manager] Validated ${validated.length} live proxies`);
 
-    // Merge with existing pool: keep existing alive proxies not already validated, add new ones
     const existingKeys = new Set(validated.map((v) => v.key));
-    const keepFromOld = validatedPool.filter((v) => v.alive && !existingKeys.has(v.key));
-    validatedPool = [...validated, ...keepFromOld];
+    validatedPool = [...validated, ...validatedPool.filter((v) => v.alive && !existingKeys.has(v.key))];
+    prunePool();
 
     return validatedPool;
   } catch (err) {
@@ -400,22 +438,28 @@ export async function fetchAndValidateProxies(): Promise<ValidatedProxy[]> {
   }
 }
 
+/** Keep only alive proxies and cap total pool size. */
+function prunePool(): void {
+  validatedPool = validatedPool
+    .filter((p) => p.alive)
+    .sort((a, b) => b.lastChecked - a.lastChecked)
+    .slice(0, MAX_POOL_SIZE);
+}
+
 /** Schedule a single source to refresh at its configured interval. */
 function scheduleSource(source: ProxySource): void {
   if (!source.enabled) return;
   const url = expandDateTemplates(source.url);
-  // Stagger start times randomly within the interval to avoid thundering herd
   const intervalMs = source.intervalHours * 60 * 60 * 1000;
   const jitter = Math.floor(Math.random() * Math.min(intervalMs, 5 * 60 * 1000)); // up to 5 min jitter
 
   const run = async () => {
     try {
+      const needed = Math.max(0, TARGET_VALIDATED - validatedPool.filter((p) => p.alive).length);
+      if (needed <= 0) return;
+
       const entries = await fetchSource(source);
       if (entries.length === 0) return;
-
-      // Merge newly fetched proxies into the pool if they pass validation, but only validate enough to maintain target
-      const needed = Math.max(0, TARGET_VALIDATED - validatedPool.filter((p) => p.alive).length);
-      if (needed <= 0) return; // already have enough
 
       const existingKeys = new Set(validatedPool.map((p) => p.key));
       const newEntries = entries
@@ -425,35 +469,36 @@ function scheduleSource(source: ProxySource): void {
         })
         .filter((e) => e.key && !e.key.includes("unknown") && !existingKeys.has(e.key))
         .map((e) => e.entry)
-        .slice(0, MAX_VALIDATION_PER_SOURCE);
+        .slice(0, MAX_ENTRIES_PER_SOURCE);
 
       if (newEntries.length === 0) return;
 
       const validated = await validateWithConcurrency(newEntries, VALIDATION_CONCURRENCY, needed);
       const newKeys = new Set(validated.map((v) => v.key));
-      validatedPool = [...validatedPool.filter((p) => !newKeys.has(p.key)), ...validated];
+      validatedPool = [...validatedPool.filter((p) => p.alive && !newKeys.has(p.key)), ...validated];
+      prunePool();
       console.log(`[proxy-manager] Source ${url} added ${validated.length} live proxies (needed ${needed})`);
     } catch (err) {
       console.error(`[proxy-manager] Scheduled source error ${url}:`, err);
     } finally {
-      // Reschedule next refresh
       sourceTimers.set(url, setTimeout(run, intervalMs));
     }
   };
 
-  sourceTimers.set(url, setTimeout(run, jitter));
+  // Wait a full interval before the first scheduled refresh to avoid a startup burst.
+  sourceTimers.set(url, setTimeout(run, intervalMs + jitter));
 }
 
 /** Start the auto-fetch background loop. Each source refreshes on its own schedule. */
 export function startProxyAutoFetch(): void {
   if (sourceTimers.size > 0) return;
 
-  // Initial bulk fetch across all sources
+  // Initial bulk fetch is throttled and memory-capped.
   fetchAndValidateProxies().catch((err) =>
     console.error("[proxy-manager] Initial fetch error:", err)
   );
 
-  // Schedule individual source refreshes with staggered intervals
+  // Schedule individual source refreshes with staggered intervals.
   for (const source of PROXY_SOURCES) {
     scheduleSource(source);
   }
@@ -598,6 +643,7 @@ export async function fetchThroughProxy(
     }
   }
 
+  // All proxies exhausted
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
