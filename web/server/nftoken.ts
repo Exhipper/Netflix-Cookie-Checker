@@ -1,5 +1,5 @@
-import type { NfTokenData } from "./types";
-import { decodeValue } from "./utils";
+import type { NfTokenData } from "./types.js";
+import { decodeValue } from "./utils.js";
 
 const NFTOKEN_API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48";
 const NFTOKEN_QUERY_PARAMS: Record<string, string> = {

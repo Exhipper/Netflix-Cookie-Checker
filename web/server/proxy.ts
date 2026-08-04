@@ -1,4 +1,4 @@
-import type { ProxyEntry } from "./types";
+import type { ProxyEntry } from "./types.js";
 
 function buildProxyDict(
   scheme: string,

@@ -122,7 +122,7 @@ export interface ResultRecord {
   nftoken_data: any;
 }
 
-import type { CheckResult, RunStats } from "./types";
+import type { CheckResult, RunStats } from "./types.js";
 
 export async function createRun(
   runId: string,

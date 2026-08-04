@@ -1,4 +1,4 @@
-import type { AccountInfo } from "./types";
+import type { AccountInfo } from "./types.js";
 import {
   decodeValue,
   extractFirstMatch,
@@ -6,7 +6,7 @@ import {
   formatBooleanLabel,
   normalizePlanKey,
   normalizePhoneNumber,
-} from "./utils";
+} from "./utils.js";
 
 function extractProfileNames(text: string): string | null {
   const names: string[] = [];

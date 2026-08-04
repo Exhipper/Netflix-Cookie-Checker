@@ -12,11 +12,11 @@ import {
   getRunResults,
   deleteRun,
   getStats,
-} from "./db";
-import { runCheck } from "./checker";
-import { parseProxies } from "./proxy";
-import { DEFAULT_CONFIG, mergeConfig } from "./config";
-import type { AppConfig, ProgressUpdate } from "./types";
+} from "./db.js";
+import { runCheck } from "./checker.js";
+import { parseProxies } from "./proxy.js";
+import { DEFAULT_CONFIG, mergeConfig } from "./config.js";
+import type { AppConfig, ProgressUpdate } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

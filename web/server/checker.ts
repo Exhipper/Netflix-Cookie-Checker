@@ -9,21 +9,21 @@ import type {
   ProgressUpdate,
   ProxyEntry,
   NfTokenData,
-} from "./types";
-import { extractCookieBundles, hasRequiredCookies, cookiesDictFromNetscape } from "./cookies";
-import { extractInfo } from "./extract";
+} from "./types.js";
+import { extractCookieBundles, hasRequiredCookies, cookiesDictFromNetscape } from "./cookies.js";
+import { extractInfo } from "./extract.js";
 import {
   derivePlanInfo,
   deriveOutputPlanBucket,
   isSubscribedAccount,
   isOnHoldAccount,
   isExtraMemberAccount,
-} from "./plan";
-import { createNfToken, hasUsableNfToken } from "./nftoken";
-import { getNfTokenMode, formatCookieFile, sendNotifications } from "./notifications";
-import { describeHttpError } from "./utils";
-import { parseProxies } from "./proxy";
-import { saveResult, updateRunStats } from "./db";
+} from "./plan.js";
+import { createNfToken, hasUsableNfToken } from "./nftoken.js";
+import { getNfTokenMode, formatCookieFile, sendNotifications } from "./notifications.js";
+import { describeHttpError } from "./utils.js";
+import { parseProxies } from "./proxy.js";
+import { saveResult, updateRunStats } from "./db.js";
 
 const RETRYABLE_STATUS_CODES = new Set([403, 429, 500, 502, 503, 504]);
 

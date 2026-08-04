@@ -1,4 +1,4 @@
-import type { CookieEntry, CookieBundle } from "./types";
+import type { CookieEntry, CookieBundle } from "./types.js";
 
 const LOGIN_REQUIRED_COOKIES = ["NetflixId"];
 const OPTIONAL_COOKIES = ["SecureNetflixId", "nfvdid", "OptanonConsent"];

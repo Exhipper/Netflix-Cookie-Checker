@@ -1,10 +1,10 @@
-import type { AccountInfo } from "./types";
+import type { AccountInfo } from "./types.js";
 import {
   decodeValue,
   normalizePlanKey,
   formatBooleanLabel,
   getCanonicalOutputLabelSafe,
-} from "./utils";
+} from "./utils.js";
 
 const PLAN_ALIASES: Record<string, Set<string>> = {
   premium: new Set([

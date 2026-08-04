@@ -1,4 +1,4 @@
-import type { AppConfig } from "./types";
+import type { AppConfig } from "./types.js";
 
 export const DEFAULT_CONFIG: AppConfig = {
   txt_fields: {

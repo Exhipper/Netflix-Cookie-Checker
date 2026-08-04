@@ -1,4 +1,4 @@
-import type { AppConfig, AccountInfo, NfTokenData, NotificationMode, EmojiMode } from "./types";
+import type { AppConfig, AccountInfo, NfTokenData, NotificationMode, EmojiMode } from "./types.js";
 import {
   decodeValue,
   normalizeOutputValue,
@@ -8,9 +8,9 @@ import {
   formatCountryWithFlag,
   formatBooleanLabel,
   escapeHtml,
-} from "./utils";
-import { derivePlanInfo, isExtraMemberAccount } from "./plan";
-import { buildNfTokenLinks, hasUsableNfToken, getNfTokenExpiryUnix } from "./nftoken";
+} from "./utils.js";
+import { derivePlanInfo, isExtraMemberAccount } from "./plan.js";
+import { buildNfTokenLinks, hasUsableNfToken, getNfTokenExpiryUnix } from "./nftoken.js";
 
 const EMOJI_MAP: Record<string, string> = {
   "Status": "📌", "Name": "👤", "Email": "📧", "Country": "🌍",
