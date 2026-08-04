@@ -452,7 +452,7 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
   }
 
   // Process tasks with limited concurrency
-  const concurrency = Math.min(threadCount, 50);
+  const concurrency = Math.min(threadCount, 300);
   let taskIndex = 0;
 
   async function worker() {

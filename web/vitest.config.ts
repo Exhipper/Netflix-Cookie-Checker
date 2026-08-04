@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     globals: true,
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    include: ["src/**/*.{test,spec}.{ts,tsx}", "server/**/*.test.ts"],
     exclude: ["src/**/*.browser.{test,spec}.{ts,tsx}"],
   },
   resolve: {
