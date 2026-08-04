@@ -4,8 +4,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "noEmit": false,
-    "outDir": "../dist/server",
-    "rootDir": ".",
+    "outDir": "./dist/server",
+    "rootDir": "./server",
     "strict": false,
     "noImplicitAny": false,
     "skipLibCheck": true,
@@ -18,6 +18,6 @@
     "verbatimModuleSyntax": false,
     "types": ["node"]
   },
-  "include": ["./server/**/*.ts"],
-  "exclude": ["../src", "../dist", "../src/test"]
+  "include": ["server/**/*.ts"],
+  "exclude": ["dist", "src", "src/test"]
 }

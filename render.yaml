@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     buildCommand: cd web && bun install && bun run build
-    startCommand: node dist/server/index.js
+    startCommand: node web/dist/server/index.js
     envVars:
       - key: DATABASE_URL
         sync: false
