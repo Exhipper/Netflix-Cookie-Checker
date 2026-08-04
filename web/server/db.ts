@@ -91,12 +91,29 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_results_plan_key ON results(plan_key)
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC)
+    `);
+
+    // Deduplicate existing success/free hits before (re)creating the unique email index.
+    await client.query(`
+      DELETE FROM results r1
+      WHERE r1.id NOT IN (
+        SELECT MAX(id) FROM results
+        WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+        GROUP BY email
+      )
+      AND r1.status IN ('success', 'free')
+      AND r1.email IS NOT NULL AND r1.email <> ''
+    `);
+
+    await client.query(`
+      DROP INDEX IF EXISTS idx_results_email_unique
+    `);
+
+    await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_results_email_unique
       ON results (email)
       WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC)
     `);
   } finally {
     client.release();
