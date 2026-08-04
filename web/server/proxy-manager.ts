@@ -16,11 +16,12 @@ export interface ValidatedProxy {
 
 const PROXY_LIST_URLS: string[] = [
   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt",
+  "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt",
 ];
 
 const VALIDATION_TIMEOUT_MS = 8000;
 const VALIDATION_URL = "https://httpbin.org/ip";
-const REFETCH_INTERVAL_MS = 10 * 60 * 1000; // re-fetch every 10 min
+const REFETCH_INTERVAL_MS = 5 * 60 * 1000; // re-fetch every 5 min
 const MAX_FAILURES = 3; // mark dead after 3 consecutive failures
 
 let validatedPool: ValidatedProxy[] = [];

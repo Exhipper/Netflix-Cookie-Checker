@@ -1082,7 +1082,7 @@ function AccountModal({
           ) : (
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
           )}
-          Recheck Account
+          Recheck Another Account
         </Button>
         <Button className="w-full h-10 bg-primary hover:bg-primary/90 text-xs" onClick={() => onOpenChange(false)}>
           Close

@@ -120,6 +120,9 @@ export async function initDatabase(): Promise<void> {
       END $$;
     `);
 
+    // Migrate: delete all existing free-plan accounts — free plans are no longer stored.
+    await client.query(`DELETE FROM results WHERE status = 'free'`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS generation_history (
         id SERIAL PRIMARY KEY,
@@ -161,15 +164,15 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_generation_history_result_id ON generation_history(result_id)
     `);
 
-    // Deduplicate existing success/free hits before (re)creating the unique email index.
+    // Deduplicate existing success hits before (re)creating the unique email index.
     await client.query(`
       DELETE FROM results r1
       WHERE r1.id NOT IN (
         SELECT MAX(id) FROM results
-        WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+        WHERE status = 'success' AND email IS NOT NULL AND email <> ''
         GROUP BY email
       )
-      AND r1.status IN ('success', 'free')
+      AND r1.status = 'success'
       AND r1.email IS NOT NULL AND r1.email <> ''
     `);
 
@@ -180,7 +183,7 @@ export async function initDatabase(): Promise<void> {
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_results_email_unique
       ON results (email)
-      WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+      WHERE status = 'success' AND email IS NOT NULL AND email <> ''
     `);
   } finally {
     client.release();
@@ -268,14 +271,17 @@ export async function saveResult(
 ): Promise<void> {
   const pool = getPool();
   const email = (result.email || "").trim().toLowerCase();
-  const isHit = result.status === "success" || result.status === "free";
+  const isHit = result.status === "success";
+
+  // Skip saving free accounts — they are not stored.
+  if (result.status === "free") return;
 
   // For hits with an email, upsert so the same account is stored only once.
   if (isHit && email) {
     await pool.query(
       `INSERT INTO results (run_id, status, plan_key, plan_name, country, email, reason, on_hold, account_info, cookie_content, formatted_output, nftoken_data, proxy_ip, checked_at, last_verified_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-       ON CONFLICT (email) WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+       ON CONFLICT (email) WHERE status = 'success' AND email IS NOT NULL AND email <> ''
        DO UPDATE SET
          run_id = EXCLUDED.run_id,
          status = EXCLUDED.status,
@@ -390,7 +396,7 @@ export async function getAllHitsResults(
 ): Promise<ResultRecord[]> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT * FROM results WHERE status IN ('success', 'free', 'duplicate') AND cookie_content IS NOT NULL
+    `SELECT * FROM results WHERE status = 'success' AND cookie_content IS NOT NULL
      ORDER BY checked_at DESC LIMIT $1 OFFSET $2`,
     [limit, offset]
   );
@@ -401,7 +407,7 @@ export async function getAllHitsResults(
 export async function countAllHitsResults(): Promise<number> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free', 'duplicate') AND cookie_content IS NOT NULL`
+    `SELECT COUNT(*) as count FROM results WHERE status = 'success' AND cookie_content IS NOT NULL`
   );
   return parseInt(result.rows[0]?.count || "0", 10);
 }
@@ -459,7 +465,7 @@ export async function deduplicateHits(): Promise<number> {
     WHERE r1.status = 'duplicate'
     AND EXISTS (
       SELECT 1 FROM results r2
-      WHERE r2.status IN ('success', 'free')
+      WHERE r2.status = 'success'
       AND r2.email IS NOT NULL
       AND r2.email = r1.email
     )
@@ -475,10 +481,10 @@ export async function deduplicateSuccessFreeHits(): Promise<number> {
     DELETE FROM results r1
     WHERE r1.id NOT IN (
       SELECT MAX(id) FROM results
-      WHERE status IN ('success', 'free') AND email IS NOT NULL AND email <> ''
+      WHERE status = 'success' AND email IS NOT NULL AND email <> ''
       GROUP BY email
     )
-    AND r1.status IN ('success', 'free')
+    AND r1.status = 'success'
     AND r1.email IS NOT NULL AND r1.email <> ''
     RETURNING r1.id
   `);
@@ -493,9 +499,9 @@ export async function getCountryBreakdown(): Promise<Array<{ country: string; co
       COALESCE(country, 'Unknown') as country,
       COUNT(*) as count,
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
-      SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
+      0 as free
     FROM results
-    WHERE status IN ('success', 'free')
+    WHERE status = 'success'
     GROUP BY COALESCE(country, 'Unknown')
     ORDER BY count DESC
   `);
@@ -506,7 +512,7 @@ export async function getCountryBreakdown(): Promise<Array<{ country: string; co
 export async function getHitLogs(limit = 50, offset = 0): Promise<ResultRecord[]> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT $1 OFFSET $2`,
+    `SELECT * FROM results WHERE status = 'success' ORDER BY checked_at DESC LIMIT $1 OFFSET $2`,
     [limit, offset]
   );
   return result.rows as ResultRecord[];
@@ -516,7 +522,7 @@ export async function getHitLogs(limit = 50, offset = 0): Promise<ResultRecord[]
 export async function countHits(): Promise<number> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`
+    `SELECT COUNT(*) as count FROM results WHERE status = 'success'`
   );
   return parseInt(result.rows[0]?.count || "0", 10);
 }
@@ -532,7 +538,7 @@ export async function searchHitLogs(
   }
 ): Promise<{ logs: ResultRecord[]; total: number }> {
   const pool = getPool();
-  const conditions: string[] = ["status IN ('success', 'free')"];
+  const conditions: string[] = ["status = 'success'"];
   const params: any[] = [];
 
   if (options.country && options.country !== "all") {
@@ -567,13 +573,13 @@ export async function getHitLogFilters(): Promise<{ countries: string[]; plans: 
   const countryResult = await pool.query(`
     SELECT DISTINCT COALESCE(country, 'Unknown') as country
     FROM results
-    WHERE status IN ('success', 'free') AND country IS NOT NULL
+    WHERE status = 'success' AND country IS NOT NULL
     ORDER BY country
   `);
   const planResult = await pool.query(`
     SELECT DISTINCT COALESCE(plan_key, 'unknown') as plan_key
     FROM results
-    WHERE status IN ('success', 'free') AND plan_key IS NOT NULL
+    WHERE status = 'success' AND plan_key IS NOT NULL
     ORDER BY plan_key
   `);
   return {
@@ -594,7 +600,7 @@ export async function getLatestResultByEmail(email: string): Promise<ResultRecor
   const pool = getPool();
   const normalized = email.trim().toLowerCase();
   const result = await pool.query(
-    `SELECT * FROM results WHERE email = $1 AND status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 1`,
+    `SELECT * FROM results WHERE email = $1 AND status = 'success' ORDER BY checked_at DESC LIMIT 1`,
     [normalized]
   );
   return (result.rows[0] as ResultRecord) || null;
@@ -604,7 +610,7 @@ export async function getLatestResultByEmail(email: string): Promise<ResultRecor
 export async function getLatestResultByCookieContent(content: string): Promise<ResultRecord | null> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT * FROM results WHERE cookie_content = $1 AND status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 1`,
+    `SELECT * FROM results WHERE cookie_content = $1 AND status = 'success' ORDER BY checked_at DESC LIMIT 1`,
     [content]
   );
   return (result.rows[0] as ResultRecord) || null;
@@ -616,7 +622,7 @@ export async function recordGeneration(
   result: CheckResult
 ): Promise<void> {
   const pool = getPool();
-  const isLive = result.status === "success" || result.status === "free";
+  const isLive = result.status === "success";
   await pool.query(
     `INSERT INTO generation_history (result_id, was_live, status, plan_key, plan_name, country, email, reason, account_info, proxy_ip)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -658,7 +664,7 @@ export async function getStaleHits(days: number): Promise<ResultRecord[]> {
   const pool = getPool();
   const result = await pool.query(
     `SELECT * FROM results
-     WHERE status IN ('success', 'free')
+     WHERE status = 'success'
      AND last_verified_at < NOW() - INTERVAL '${Math.max(1, days)} days'
      ORDER BY last_verified_at ASC
      LIMIT 1000`,
@@ -671,7 +677,7 @@ export async function countStaleHits(days: number): Promise<number> {
   const pool = getPool();
   const result = await pool.query(
     `SELECT COUNT(*) as count FROM results
-     WHERE status IN ('success', 'free')
+     WHERE status = 'success'
      AND last_verified_at < NOW() - INTERVAL '${Math.max(1, days)} days'`
   );
   return parseInt(result.rows[0]?.count || "0", 10);
@@ -682,7 +688,7 @@ export async function getStats(): Promise<any> {
   try {
     const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);
     const totalResults = await pool.query(`SELECT COUNT(*) as count FROM results`);
-    const totalHits = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`);
+    const totalHits = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success'`);
     const activeCookies = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success'`);
     const statusBreakdown = await pool.query(
       `SELECT status, COUNT(*) as count FROM results GROUP BY status`
@@ -695,24 +701,24 @@ export async function getStats(): Promise<any> {
         COALESCE(country, 'Unknown') as country,
         COUNT(*) as count,
         SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
-        SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
+        0 as free
       FROM results
-      WHERE status IN ('success', 'free')
+      WHERE status = 'success'
       GROUP BY COALESCE(country, 'Unknown')
       ORDER BY count DESC
     `);
     const recentHits = await pool.query(`
-      SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 10
+      SELECT * FROM results WHERE status = 'success' ORDER BY checked_at DESC LIMIT 10
     `);
-    const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free') AND cookie_content IS NOT NULL`);
+    const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success' AND cookie_content IS NOT NULL`);
     const staleHits7d = await pool.query(`
       SELECT COUNT(*) as count FROM results
-      WHERE status IN ('success', 'free')
+      WHERE status = 'success'
       AND last_verified_at < NOW() - INTERVAL '7 days'
     `);
     const staleHits1d = await pool.query(`
       SELECT COUNT(*) as count FROM results
-      WHERE status IN ('success', 'free')
+      WHERE status = 'success'
       AND last_verified_at < NOW() - INTERVAL '1 days'
     `);
     return {

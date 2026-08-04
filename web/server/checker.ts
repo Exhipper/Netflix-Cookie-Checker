@@ -24,7 +24,7 @@ import { getNfTokenMode, formatCookieFile, sendNotifications } from "./notificat
 import { describeHttpError } from "./utils.js";
 import { parseProxies } from "./proxy.js";
 import { fetchThroughProxy, getNextProxy, markProxyFailed, markProxySuccess, fetchAndValidateProxies, getProxyPoolStatus } from "./proxy-manager.js";
-import { saveResult, updateResult, updateRunStats } from "./db.js";
+import { saveResult, updateResult, updateRunStats, deleteResultById } from "./db.js";
 
 const RETRYABLE_STATUS_CODES = new Set([403, 429, 500, 502, 503, 504]);
 
@@ -462,8 +462,11 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
           break;
       }
 
-      // Save to DB (non-blocking) — skip duplicates, they are auto-deleted
-      if (result.status !== "duplicate") {
+      // Save to DB (non-blocking) — skip duplicates and free accounts
+      // Free accounts are not stored; if rechecking an existing row that is now free, delete it.
+      if (result.status === "free" && task.resultId) {
+        deleteResultById(task.resultId).catch(() => {});
+      } else if (result.status !== "duplicate" && result.status !== "free") {
         if (task.resultId) {
           // Recheck mode: update the existing row so status/counts stay accurate
           updateResult(task.resultId, result).catch(() => {});

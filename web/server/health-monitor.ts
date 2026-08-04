@@ -144,7 +144,7 @@ export async function runHealthCheck(
   // After recheck, all hits were upserted by email. Find rows tied to this run that are dead.
   const recheckedResults = await getRunResults(runId, 5000, 0);
   const deadResults = recheckedResults.filter(
-    (r) => r.status !== "success" && r.status !== "free"
+    (r) => r.status !== "success"
   );
   let deleted = 0;
 
@@ -225,7 +225,7 @@ export async function cleanupStaleHits(
 
   const recheckedResults = await getRunResults(runId, 5000, 0);
   const deadResults = recheckedResults.filter(
-    (r) => r.status !== "success" && r.status !== "free"
+    (r) => r.status !== "success"
   );
   let deleted = 0;
 

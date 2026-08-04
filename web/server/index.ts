@@ -394,7 +394,7 @@ app.post("/api/generate-account", async (req, res) => {
       mergedAccountInfo.planKey = checkResult.planKey || randomHit.plan_key;
     }
     if (!mergedAccountInfo.membershipStatus && (checkResult.status || randomHit.status)) {
-      mergedAccountInfo.membershipStatus = checkResult.status === "success" ? "Active" : (checkResult.status === "free" ? "Free" : (checkResult.status || randomHit.status));
+      mergedAccountInfo.membershipStatus = checkResult.status === "success" ? "Active" : (checkResult.status || randomHit.status);
     }
 
     // Build nftoken links - prefer fresh token, fall back to stored token
@@ -415,7 +415,12 @@ app.post("/api/generate-account", async (req, res) => {
       ];
     }
 
-    const isLive = checkResult.status === "success" || checkResult.status === "free";
+    const isLive = checkResult.status === "success";
+
+    // Auto-delete free accounts from the database
+    if (checkResult.status === "free") {
+      await deleteResultById(randomHit.id).catch(() => {});
+    }
 
     // Record generation history
     await recordGeneration(randomHit.id, {
@@ -507,7 +512,7 @@ app.post("/api/recheck/:id", async (req, res) => {
       return;
     }
 
-    const isLive = checkResult.status === "success" || checkResult.status === "free";
+    const isLive = checkResult.status === "success";
     if (isLive) {
       await updateResult(id, checkResult);
     } else if (autoDelete) {
