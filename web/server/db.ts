@@ -67,7 +67,6 @@ export async function initDatabase(): Promise<void> {
         id SERIAL PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
         checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        last_verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         status TEXT NOT NULL,
         plan_key TEXT,
         plan_name TEXT,
@@ -80,6 +79,19 @@ export async function initDatabase(): Promise<void> {
         formatted_output TEXT,
         nftoken_data JSONB
       )
+    `);
+
+    // Migrate existing tables that were created before last_verified_at was added.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'results' AND column_name = 'last_verified_at'
+        ) THEN
+          ALTER TABLE results ADD COLUMN last_verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        END IF;
+      END $$;
     `);
 
     await client.query(`
@@ -634,52 +646,57 @@ export async function countStaleHits(days: number): Promise<number> {
 
 export async function getStats(): Promise<any> {
   const pool = getPool();
-  const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);
-  const totalResults = await pool.query(`SELECT COUNT(*) as count FROM results`);
-  const totalHits = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`);
-  const activeCookies = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success'`);
-  const statusBreakdown = await pool.query(
-    `SELECT status, COUNT(*) as count FROM results GROUP BY status`
-  );
-  const planBreakdown = await pool.query(
-    `SELECT plan_key, COUNT(*) as count FROM results WHERE plan_key IS NOT NULL GROUP BY plan_key ORDER BY count DESC`
-  );
-  const countryBreakdown = await pool.query(`
-    SELECT
-      COALESCE(country, 'Unknown') as country,
-      COUNT(*) as count,
-      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
-      SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
-    FROM results
-    WHERE status IN ('success', 'free')
-    GROUP BY COALESCE(country, 'Unknown')
-    ORDER BY count DESC
-  `);
-  const recentHits = await pool.query(`
-    SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 10
-  `);
-  const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free') AND cookie_content IS NOT NULL`);
-  const staleHits7d = await pool.query(`
-    SELECT COUNT(*) as count FROM results
-    WHERE status IN ('success', 'free')
-    AND last_verified_at < NOW() - INTERVAL '7 days'
-  `);
-  const staleHits1d = await pool.query(`
-    SELECT COUNT(*) as count FROM results
-    WHERE status IN ('success', 'free')
-    AND last_verified_at < NOW() - INTERVAL '1 days'
-  `);
-  return {
-    totalRuns: totalRuns.rows[0]?.count || 0,
-    totalResults: totalResults.rows[0]?.count || 0,
-    totalHits: totalHits.rows[0]?.count || 0,
-    activeCookies: activeCookies.rows[0]?.count || 0,
-    totalCookiesStored: totalCookiesStored.rows[0]?.count || 0,
-    statusBreakdown: statusBreakdown.rows,
-    planBreakdown: planBreakdown.rows,
-    countryBreakdown: countryBreakdown.rows,
-    recentHits: recentHits.rows,
-    staleHits7d: staleHits7d.rows[0]?.count || 0,
-    staleHits1d: staleHits1d.rows[0]?.count || 0,
-  };
+  try {
+    const totalRuns = await pool.query(`SELECT COUNT(*) as count FROM runs`);
+    const totalResults = await pool.query(`SELECT COUNT(*) as count FROM results`);
+    const totalHits = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free')`);
+    const activeCookies = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status = 'success'`);
+    const statusBreakdown = await pool.query(
+      `SELECT status, COUNT(*) as count FROM results GROUP BY status`
+    );
+    const planBreakdown = await pool.query(
+      `SELECT plan_key, COUNT(*) as count FROM results WHERE plan_key IS NOT NULL GROUP BY plan_key ORDER BY count DESC`
+    );
+    const countryBreakdown = await pool.query(`
+      SELECT
+        COALESCE(country, 'Unknown') as country,
+        COUNT(*) as count,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as hits,
+        SUM(CASE WHEN status = 'free' THEN 1 ELSE 0 END) as free
+      FROM results
+      WHERE status IN ('success', 'free')
+      GROUP BY COALESCE(country, 'Unknown')
+      ORDER BY count DESC
+    `);
+    const recentHits = await pool.query(`
+      SELECT * FROM results WHERE status IN ('success', 'free') ORDER BY checked_at DESC LIMIT 10
+    `);
+    const totalCookiesStored = await pool.query(`SELECT COUNT(*) as count FROM results WHERE status IN ('success', 'free') AND cookie_content IS NOT NULL`);
+    const staleHits7d = await pool.query(`
+      SELECT COUNT(*) as count FROM results
+      WHERE status IN ('success', 'free')
+      AND last_verified_at < NOW() - INTERVAL '7 days'
+    `);
+    const staleHits1d = await pool.query(`
+      SELECT COUNT(*) as count FROM results
+      WHERE status IN ('success', 'free')
+      AND last_verified_at < NOW() - INTERVAL '1 days'
+    `);
+    return {
+      totalRuns: totalRuns.rows[0]?.count || 0,
+      totalResults: totalResults.rows[0]?.count || 0,
+      totalHits: totalHits.rows[0]?.count || 0,
+      activeCookies: activeCookies.rows[0]?.count || 0,
+      totalCookiesStored: totalCookiesStored.rows[0]?.count || 0,
+      statusBreakdown: statusBreakdown.rows,
+      planBreakdown: planBreakdown.rows,
+      countryBreakdown: countryBreakdown.rows,
+      recentHits: recentHits.rows,
+      staleHits7d: staleHits7d.rows[0]?.count || 0,
+      staleHits1d: staleHits1d.rows[0]?.count || 0,
+    };
+  } catch (err) {
+    console.error("getStats failed:", err);
+    throw err;
+  }
 }

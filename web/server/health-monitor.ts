@@ -112,6 +112,7 @@ export async function runHealthCheck(
   const cookies = hits.map((r) => ({
     name: r.email || `result_${r.id}`,
     content: r.cookie_content!,
+    resultId: r.id,
   }));
 
   try {
@@ -190,6 +191,7 @@ export async function cleanupStaleHits(
   const cookies = hits.map((r) => ({
     name: r.email || `result_${r.id}`,
     content: r.cookie_content!,
+    resultId: r.id,
   }));
 
   try {

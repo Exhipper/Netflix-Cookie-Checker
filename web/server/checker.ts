@@ -23,7 +23,7 @@ import { createNfToken, hasUsableNfToken } from "./nftoken.js";
 import { getNfTokenMode, formatCookieFile, sendNotifications } from "./notifications.js";
 import { describeHttpError } from "./utils.js";
 import { parseProxies } from "./proxy.js";
-import { saveResult, updateRunStats } from "./db.js";
+import { saveResult, updateResult, updateRunStats } from "./db.js";
 
 const RETRYABLE_STATUS_CODES = new Set([403, 429, 500, 502, 503, 504]);
 
@@ -129,11 +129,12 @@ interface CookieTask {
   removeSource?: boolean;
   fileName?: string;
   content?: string;
+  resultId?: number;
 }
 
 export interface RunOptions {
   config: AppConfig;
-  cookies: Array<{ name: string; content: string }>;
+  cookies: Array<{ name: string; content: string; resultId?: number }>;
   proxies: ProxyEntry[];
   threadCount: number;
   runId: string;
@@ -426,6 +427,7 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
         bundleTotal: bundle.total,
         bundleFile: cookie.name,
         bundleLabel: bundle.total > 1 ? `${cookie.name} [${bundle.index}/${bundle.total}]` : cookie.name,
+        resultId: cookie.resultId,
       });
     }
   }
@@ -489,7 +491,12 @@ export async function runCheck(opts: RunOptions): Promise<RunStats> {
 
       // Save to DB (non-blocking) — skip duplicates, they are auto-deleted
       if (result.status !== "duplicate") {
-        saveResult(runId, result).catch(() => {});
+        if (task.resultId) {
+          // Recheck mode: update the existing row so status/counts stay accurate
+          updateResult(task.resultId, result).catch(() => {});
+        } else {
+          saveResult(runId, result).catch(() => {});
+        }
       }
 
       // Send progress update

@@ -480,7 +480,7 @@ app.post("/api/recheck/:id", async (req, res) => {
 
     await runCheck({
       config,
-      cookies: [{ name: result.email || `result_${result.id}`, content: result.cookie_content }],
+      cookies: [{ name: result.email || `result_${result.id}`, content: result.cookie_content, resultId: result.id }],
       proxies,
       threadCount,
       runId,
