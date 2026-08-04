@@ -420,6 +420,7 @@ export async function runHealthCheckNow(deleteDeadCookies = true, threads = 30):
 
 export interface GeneratedAccount {
   runId: string;
+  storedHitId: number;
   result: {
     status: string;
     planKey?: string;

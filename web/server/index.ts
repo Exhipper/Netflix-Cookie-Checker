@@ -424,6 +424,7 @@ app.post("/api/generate-account", async (req, res) => {
 
     res.json({
       runId,
+      storedHitId: randomHit.id,
       result: {
         status: checkResult.status,
         planKey: checkResult.planKey || randomHit.plan_key || undefined,

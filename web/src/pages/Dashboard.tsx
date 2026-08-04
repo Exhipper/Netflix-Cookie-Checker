@@ -22,8 +22,6 @@ import {
   History,
   Monitor,
   Download,
-  Terminal,
-  LayoutList,
   ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +34,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   Select,
   SelectContent,
@@ -650,6 +649,7 @@ export default function Dashboard() {
         open={showAccountModal}
         onOpenChange={setShowAccountModal}
         account={generatedAccount}
+        onRecheck={loadData}
       />
     </div>
   );
@@ -770,27 +770,38 @@ function AccountModal({
   open,
   onOpenChange,
   account,
+  onRecheck,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: GeneratedAccount | null;
+  onRecheck?: () => void;
 }) {
+  const [isRechecking, setIsRechecking] = useState(false);
   if (!account) return null;
 
   const result = account.result;
-  const info = { ...(result.accountInfo || {}) };
+  const rawInfo = (result.accountInfo || {}) as Record<string, any>;
   const isLive = result.isLive;
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
+  // Merge stored accountInfo with top-level result fallbacks so the modal
+  // always shows basic fields even when accountInfo was not captured.
+  const info: Record<string, any> = {
+    ...rawInfo,
+    email: rawInfo.email || result.email || null,
+    countryOfSignup: rawInfo.countryOfSignup || result.country || null,
+    localizedPlanName: rawInfo.localizedPlanName || result.planName || null,
+    planKey: rawInfo.planKey || result.planKey || null,
+    status: result.status || null,
+    reason: result.reason || null,
+    membershipStatus: rawInfo.membershipStatus || (isLive ? "Active" : "Inactive") || null,
   };
 
-  const planLabel = result.planName || info.localizedPlanName || info.planKey || "Unknown";
-  const country = result.country || info.countryOfSignup || "Unknown";
-  const email = result.email || info.email || "Unknown";
+  const planLabel = info.localizedPlanName || info.planKey || "Unknown";
+  const country = info.countryOfSignup || "Unknown";
+  const email = info.email || "Unknown";
 
-  const allFields = [
+  const knownFields = [
     { key: "email", label: "Email" },
     { key: "countryOfSignup", label: "Country" },
     { key: "localizedPlanName", label: "Plan" },
@@ -814,26 +825,80 @@ function AccountModal({
     { key: "reason", label: "Reason" },
   ];
 
-  const visibleFields = allFields
+  const knownKeys = new Set(knownFields.map((f) => f.key));
+  const hiddenKeys = new Set([
+    "accountOwnerName",
+    "profiles",
+    "profilesDisplay",
+    "profileCount",
+    "phoneDisplay",
+  ]);
+
+  const extraEntries = Object.entries(rawInfo).filter(
+    ([key, value]) =>
+      !knownKeys.has(key) &&
+      !hiddenKeys.has(key) &&
+      value !== null &&
+      value !== undefined &&
+      String(value).trim() !== "" &&
+      String(value).toLowerCase() !== "null"
+  );
+
+  const visibleFields = knownFields
     .map((f) => ({ ...f, value: info[f.key] }))
     .filter((f) => {
       const value = f.value;
-      return value !== null && value !== undefined && value !== "" && value !== "null" && value !== "undefined";
+      return value !== null && value !== undefined && String(value).trim() !== "" && String(value).toLowerCase() !== "null";
     });
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md w-[94%] max-h-[90dvh] p-0 gap-0 overflow-hidden flex flex-col rounded-2xl border border-border/60 shadow-2xl bg-[#0f0f12]/95 backdrop-blur-xl">
-        <div className="sr-only">
-          <DialogTitle>Generated Account</DialogTitle>
-          <DialogDescription>
-            Account generated from stored hit database and rechecked for liveness
-          </DialogDescription>
-        </div>
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success("Copied to clipboard");
+  };
 
-        {/* Floating header */}
-        <div className="relative px-4 pt-4 pb-3 sm:px-5 border-b border-border/50 shrink-0">
-          <div className="flex items-center justify-between">
+  const copyAllDetails = () => {
+    const lines = visibleFields.map((f) => `${f.label}: ${f.value}`);
+    for (const [key, value] of extraEntries) {
+      const label = key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase());
+      lines.push(`${label}: ${value}`);
+    }
+    if (result.nfTokenLinks?.length) {
+      lines.push("", "NFToken Links:");
+      for (const [label, url] of result.nfTokenLinks) {
+        lines.push(`${label}: ${url}`);
+      }
+    }
+    navigator.clipboard.writeText(lines.join("\n"));
+    toast.success("Account details copied");
+  };
+
+  const handleRecheck = async () => {
+    if (!account.storedHitId) return;
+    setIsRechecking(true);
+    try {
+      const config = await getDefaultConfig().catch(() => ({}));
+      const recheckResult = await recheckHit(account.storedHitId, "", config, 30, true);
+      if (recheckResult.isLive) {
+        toast.success("Account is still live", { description: email });
+      } else if (recheckResult.autoDeleted) {
+        toast.error("Account dead — deleted", { description: email });
+        onOpenChange(false);
+      } else {
+        toast.warning("Account dead", { description: recheckResult.reason || "Not live" });
+      }
+      onRecheck?.();
+    } catch (err: any) {
+      toast.error(err.message || "Recheck failed");
+    } finally {
+      setIsRechecking(false);
+    }
+  };
+
+  const modalContent = (
+    <>
+      <div className="relative px-4 pt-4 pb-3 sm:px-5 border-b border-border/50 shrink-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <Badge className="bg-primary/20 text-primary border-primary/30 hover:bg-primary/20 px-3 py-1 text-xs font-bold uppercase tracking-wide">
                 {planLabel}
@@ -842,24 +907,60 @@ function AccountModal({
                 {country}
               </Badge>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded-full"
-              onClick={() => onOpenChange(false)}
-            >
-              <X className="h-4 w-4" />
-            </Button>
+            <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
+              <Mail className="h-3 w-3 shrink-0" />
+              <span className="truncate">{email}</span>
+            </div>
           </div>
-          <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
-            <Mail className="h-3 w-3" />
-            <span className="truncate">{email}</span>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full shrink-0"
+            onClick={() => onOpenChange(false)}
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
+        <div className="flex items-center gap-2 mt-3">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={copyAllDetails}
+          >
+            <Copy className="h-3 w-3 mr-1" />
+            Copy
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => downloadText(result.cookieContent || "", `cookie-${email}.txt`)}
+            disabled={!result.cookieContent}
+          >
+            <Download className="h-3 w-3 mr-1" />
+            Cookie
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={handleRecheck}
+            disabled={isRechecking || !account.storedHitId}
+          >
+            {isRechecking ? (
+              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3 mr-1" />
+            )}
+            Recheck
+          </Button>
+        </div>
+      </div>
 
-        <ScrollArea className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
           <div className="p-4 sm:p-5 space-y-4">
-            {/* Live status banner */}
             <div
               className={cn(
                 "flex items-center gap-3 rounded-xl p-3 border",
@@ -883,39 +984,24 @@ function AccountModal({
               </div>
             </div>
 
-            {/* Action toolbar */}
-            <div className="grid grid-cols-4 gap-2">
-              <ActionButton
-                icon={<Copy className="h-4 w-4" />}
-                label="Copy"
-                onClick={() => copyToClipboard(result.cookieContent || "")}
-              />
-              <ActionButton
-                icon={<Download className="h-4 w-4" />}
-                label="Download"
-                onClick={() => downloadText(result.cookieContent || "", `cookie-${email}.txt`)}
-              />
-              <ActionButton
-                icon={<LayoutList className="h-4 w-4" />}
-                label="Details"
-                onClick={() => {}}
-                active
-              />
-              <ActionButton
-                icon={<Terminal className="h-4 w-4" />}
-                label="Cookie"
-                onClick={() => {}}
-              />
-            </div>
-
-            {/* Account Info List */}
             <div className="space-y-1">
               {visibleFields.map((f) => (
                 <InfoRow key={f.key} label={f.label} value={String(f.value)} />
               ))}
+              {extraEntries.map(([key, value]) => (
+                <InfoRow
+                  key={key}
+                  label={key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
+                  value={String(value)}
+                />
+              ))}
+              {visibleFields.length === 0 && extraEntries.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No detailed account information was captured for this cookie.
+                </p>
+              )}
             </div>
 
-            {/* NFToken Redirect Buttons */}
             {result.nfTokenLinks && result.nfTokenLinks.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm font-semibold">
@@ -931,7 +1017,10 @@ function AccountModal({
                       rel="noopener noreferrer"
                       className="block"
                     >
-                      <Button variant="outline" className="w-full justify-start h-11 text-sm border-primary/30 hover:bg-primary/10 hover:text-primary">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start h-11 text-sm border-primary/30 hover:bg-primary/10 hover:text-primary"
+                      >
                         <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
                         {label}
                       </Button>
@@ -946,7 +1035,6 @@ function AccountModal({
               </div>
             )}
 
-            {/* Cookie Content */}
             {result.cookieContent && (
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -961,13 +1049,12 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-36 sm:max-h-40 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-36 sm:max-h-40 font-mono break-all whitespace-pre-wrap">
                   {result.cookieContent}
                 </pre>
               </div>
             )}
 
-            {/* Formatted Output */}
             {result.formattedOutput && (
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -982,49 +1069,44 @@ function AccountModal({
                     Copy
                   </Button>
                 </div>
-                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40 sm:max-h-56 font-mono">
+                <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40 sm:max-h-56 font-mono break-all whitespace-pre-wrap">
                   {result.formattedOutput}
                 </pre>
               </div>
             )}
           </div>
         </ScrollArea>
+      </div>
 
-        {/* Footer close button */}
-        <div className="border-t border-border/50 p-3 sm:p-4 shrink-0">
-          <Button className="w-full bg-primary hover:bg-primary/90" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+      <div className="border-t border-border/50 p-3 sm:p-4 shrink-0">
+        <Button className="w-full bg-primary hover:bg-primary/90" onClick={() => onOpenChange(false)}>
+          Close
+        </Button>
+      </div>
+    </>
   );
-}
 
-function ActionButton({
-  icon,
-  label,
-  onClick,
-  active,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-}) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex flex-col items-center gap-1 rounded-xl p-2 transition-all",
-        active
-          ? "bg-primary/15 text-primary border border-primary/30"
-          : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent"
-      )}
-    >
-      {icon}
-      <span className="text-[10px] font-medium">{label}</span>
-    </button>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Content
+          className={cn(
+            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 flex flex-col gap-0 overflow-hidden rounded-2xl border border-border/60 shadow-2xl bg-[#0f0f12]/95 backdrop-blur-xl",
+            "w-[92%] max-w-md max-h-[90dvh]",
+            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+          )}
+        >
+          <div className="sr-only">
+            <DialogTitle>Generated Account</DialogTitle>
+            <DialogDescription>
+              Account generated from stored hit database and rechecked for liveness
+            </DialogDescription>
+          </div>
+          {modalContent}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </Dialog>
   );
 }
 
