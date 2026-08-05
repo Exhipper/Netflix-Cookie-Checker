@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, ScanLine, Settings as SettingsIcon, Menu, X } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { LayoutDashboard, ScanLine, Settings as SettingsIcon, Menu, X, Loader2, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCheckRun } from "@/hooks/useCheckRun";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -11,7 +12,13 @@ const navItems = [
 
 export default function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { isRunning, progress, liveResults } = useCheckRun();
+
+  const processed = progress?.processed || 0;
+  const total = progress?.total || 0;
+  const counts = progress?.counts;
 
   return (
     <div className="min-h-screen bg-background bg-grid">
@@ -49,6 +56,37 @@ export default function Layout() {
             );
           })}
         </nav>
+
+        {/* Active check indicator */}
+        {isRunning && (
+          <div className="border-t border-border p-3">
+            <button
+              onClick={() => navigate("/checker")}
+              className="w-full rounded-md bg-green-500/10 border border-green-500/20 p-3 text-left transition-all hover:bg-green-500/15"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-green-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Check Running
+              </div>
+              <div className="mt-1.5 text-xs text-muted-foreground">
+                {processed}/{total} processed
+                {counts && counts.hits > 0 && ` · ${counts.hits} hits`}
+                {liveResults.length > 0 && ` · ${liveResults.length} results`}
+              </div>
+              <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-full bg-green-500 transition-all duration-300"
+                  style={{ width: `${total > 0 ? (processed / total) * 100 : 0}%` }}
+                />
+              </div>
+              <div className="mt-1.5 text-[10px] text-muted-foreground/70 flex items-center gap-1">
+                <Activity className="h-2.5 w-2.5" />
+                Click to view live results
+              </div>
+            </button>
+          </div>
+        )}
+
         <div className="border-t border-border p-4">
           <div className="text-xs text-muted-foreground">
             Forked from{" "}
@@ -72,12 +110,23 @@ export default function Layout() {
           </div>
           <span className="text-sm font-semibold">Cookie Checker</span>
         </div>
-        <button
-          onClick={() => setMobileOpen(!mobileOpen)}
-          className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </button>
+        <div className="flex items-center gap-2">
+          {isRunning && (
+            <button
+              onClick={() => navigate("/checker")}
+              className="flex items-center gap-1.5 rounded-md bg-green-500/10 px-2.5 py-1.5 text-xs font-medium text-green-500"
+            >
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {processed}/{total}
+            </button>
+          )}
+          <button
+            onClick={() => setMobileOpen(!mobileOpen)}
+            className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
       </div>
 
       {/* Mobile Nav */}

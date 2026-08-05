@@ -1,5 +1,7 @@
 import type { ProxyEntry } from "./types.js";
 
+export type ProxyFormatHint = "default" | "colon" | "space" | "json";
+
 function buildProxyDict(
   scheme: string,
   host: string,
@@ -18,10 +20,10 @@ function buildProxyDict(
 
 export function parseProxyLine(line: string): ProxyEntry | null {
   line = line.trim();
-  if (!line || line.startsWith("#")) return null;
+  if (!line || line.startsWith("#") || line.startsWith("//")) return null;
 
   // Normalize scheme
-  line = line.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/+/, "$1://");
+  line = line.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\+/, "$1://");
   line = line.replace(/\s+/g, " ").trim();
 
   // scheme://user:pass@host:port
@@ -88,11 +90,81 @@ export function parseProxyLine(line: string): ProxyEntry | null {
   return null;
 }
 
-export function parseProxies(text: string): ProxyEntry[] {
+/** Parse colon-separated proxy tokens on a single line (ip:port:ip:port...). */
+function parseColonLine(line: string): ProxyEntry[] {
   const proxies: ProxyEntry[] = [];
-  for (const line of text.split("\n")) {
-    const proxy = parseProxyLine(line);
+  const tokens = line.split(":");
+  for (let i = 0; i < tokens.length - 1; i += 2) {
+    const host = tokens[i]?.trim();
+    const port = tokens[i + 1]?.trim();
+    if (host && port && /^\d+$/.test(port)) {
+      const proxy = buildProxyDict("http", host, port);
+      proxies.push(proxy);
+    }
+  }
+  return proxies;
+}
+
+/** Parse space-separated proxy tokens on a single line. */
+function parseSpaceLine(line: string): ProxyEntry[] {
+  const proxies: ProxyEntry[] = [];
+  for (const token of line.split(/\s+/)) {
+    const proxy = parseProxyLine(token);
     if (proxy) proxies.push(proxy);
+  }
+  return proxies;
+}
+
+export function parseProxies(
+  text: string,
+  hint: ProxyFormatHint = "default",
+  maxEntries?: number
+): ProxyEntry[] {
+  const proxies: ProxyEntry[] = [];
+  const seen = new Set<string>();
+
+  const canAdd = () => !maxEntries || proxies.length < maxEntries;
+  const dedupe = (entry: ProxyEntry): boolean => {
+    if (!canAdd()) return false;
+    const key = entry.http || entry.https;
+    if (seen.has(key)) return true;
+    seen.add(key);
+    proxies.push(entry);
+    return true;
+  };
+
+  for (const rawLine of text.split("\n")) {
+    if (!canAdd()) break;
+
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith("//")) continue;
+
+    if (hint === "space") {
+      for (const p of parseSpaceLine(line)) {
+        if (!dedupe(p)) break;
+      }
+    } else if (hint === "colon") {
+      for (const p of parseColonLine(line)) {
+        if (!dedupe(p)) break;
+      }
+    } else {
+      // Default: try standard line parsing first, then space tokens, then colon tokens.
+      const standard = parseProxyLine(line);
+      if (standard) {
+        dedupe(standard);
+      } else {
+        const spaceParsed = parseSpaceLine(line);
+        if (spaceParsed.length > 0) {
+          for (const p of spaceParsed) {
+            if (!dedupe(p)) break;
+          }
+        } else {
+          for (const p of parseColonLine(line)) {
+            if (!dedupe(p)) break;
+          }
+        }
+      }
+    }
   }
   return proxies;
 }

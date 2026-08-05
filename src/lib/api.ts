@@ -152,6 +152,13 @@ export function subscribeToRun(
   return es;
 }
 
+/** Check if a run is still active on the server (for reconnect support). */
+export async function getRunStatus(runId: string): Promise<{ active: boolean; progress: ProgressUpdate | null }> {
+  const res = await fetch(`${API_BASE}/api/check/${runId}/status`);
+  if (!res.ok) throw new Error("Failed to fetch run status");
+  return res.json();
+}
+
 export async function cancelRun(runId: string): Promise<void> {
   await fetch(`${API_BASE}/api/check/${runId}/cancel`, { method: "POST" });
 }
@@ -197,7 +204,7 @@ export async function getDefaultConfig(): Promise<AppConfig> {
   return res.json();
 }
 
-export async function checkHealth(): Promise<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number } }> {
+export async function checkHealth(): Promise<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number; nextRunAt: number | null; lastRunAt: number | null } }> {
   const res = await fetch(`${API_BASE}/api/health`);
   if (!res.ok) throw new Error("Health check failed");
   return res.json();
@@ -384,7 +391,7 @@ export async function getGenerationHistory(limit = 50, offset = 0): Promise<{ hi
 }
 
 /** Get health monitor status. */
-export async function getHealthMonitorStatus(): Promise<{ status: { running: boolean; intervalHours: number } }> {
+export async function getHealthMonitorStatus(): Promise<{ status: { running: boolean; intervalHours: number; nextRunAt: number | null; lastRunAt: number | null } }> {
   const res = await fetch(`${API_BASE}/api/health-monitor`);
   if (!res.ok) throw new Error("Failed to fetch health monitor status");
   return res.json();

@@ -37,16 +37,21 @@ export interface HealthMonitorSummary {
 
 let monitorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
+let lastRunAt: number | null = null;
+let nextRunAt: number | null = null;
 
 export function startHealthMonitor(options: HealthMonitorOptions): void {
   stopHealthMonitor();
   if (!options.intervalHours || options.intervalHours <= 0) return;
 
   const intervalMs = options.intervalHours * 60 * 60 * 1000;
+  nextRunAt = Date.now() + intervalMs;
 
-  // Run immediately once, then on interval
   scheduleRun(options);
-  monitorInterval = setInterval(() => scheduleRun(options), intervalMs);
+  monitorInterval = setInterval(() => {
+    nextRunAt = Date.now() + intervalMs;
+    scheduleRun(options);
+  }, intervalMs);
 }
 
 export function stopHealthMonitor(): void {
@@ -54,6 +59,7 @@ export function stopHealthMonitor(): void {
     clearInterval(monitorInterval);
     monitorInterval = null;
   }
+  nextRunAt = null;
 }
 
 export function isHealthMonitorRunning(): boolean {
@@ -63,16 +69,21 @@ export function isHealthMonitorRunning(): boolean {
 export function getHealthMonitorStatus(): {
   running: boolean;
   intervalHours: number;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
 } {
   return {
     running: monitorInterval !== null,
-    intervalHours: monitorInterval ? 24 : 0,
+    intervalHours: 24,
+    nextRunAt,
+    lastRunAt,
   };
 }
 
 async function scheduleRun(options: HealthMonitorOptions): Promise<void> {
   if (isRunning) return;
   isRunning = true;
+  lastRunAt = Date.now();
   try {
     await runHealthCheck(options);
   } catch (err: any) {
