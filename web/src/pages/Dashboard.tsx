@@ -22,6 +22,7 @@ import {
   ChevronDown,
   Network,
   Wifi,
+  Timer,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -71,7 +72,7 @@ import { toast } from "sonner";
 
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
-  const [health, setHealth] = useState<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number } } | null>(null);
+  const [health, setHealth] = useState<{ status: string; database: string; healthMonitor?: { running: boolean; intervalHours: number; nextRunAt: number | null; lastRunAt: number | null } } | null>(null);
   const [loading, setLoading] = useState(true);
   const [recheckCount, setRecheckCount] = useState<number | null>(null);
   const [isRechecking, setIsRechecking] = useState(false);
@@ -96,6 +97,7 @@ export default function Dashboard() {
   const [recheckingHitId, setRecheckingHitId] = useState<number | null>(null);
   const [proxyPool, setProxyPool] = useState<{ total: number; alive: number; dead: number; lastFetch: number | null; isFetching: boolean } | null>(null);
   const [isRefreshingProxies, setIsRefreshingProxies] = useState(false);
+  const [healthCountdown, setHealthCountdown] = useState<string>("");
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardEventSourceRef = useRef<EventSource | null>(null);
 
@@ -133,8 +135,31 @@ export default function Dashboard() {
     deduplicateHits().catch(() => {});
     loadData();
     const interval = setInterval(loadData, 10000);
-    return () => clearInterval(interval);
-  }, [loadData]);
+
+    const countdownInterval = setInterval(() => {
+      const next = health?.healthMonitor?.nextRunAt;
+      if (!next) {
+        setHealthCountdown("");
+        return;
+      }
+      const remaining = Math.max(0, next - Date.now());
+      if (remaining <= 0) {
+        setHealthCountdown("Running now");
+        return;
+      }
+      const hours = Math.floor(remaining / (1000 * 60 * 60));
+      const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
+      setHealthCountdown(
+        `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
+      );
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(countdownInterval);
+    };
+  }, [loadData, health?.healthMonitor?.nextRunAt]);
 
   useEffect(() => {
     // Real-time dashboard updates via SSE
@@ -462,6 +487,18 @@ export default function Dashboard() {
           icon={<Activity className="h-5 w-5" />}
           color="text-blue-500"
         />
+        <Card className="border-primary/20">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Auto Recheck</CardTitle>
+            <Timer className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold tracking-tight">
+              {healthCountdown || "--:--:--"}
+            </div>
+            <p className="text-sm text-muted-foreground">Next automatic recheck</p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Country Breakdown + Plan Distribution */}
