@@ -866,24 +866,23 @@ async function start() {
   startProxyAutoFetch();
   console.log("Proxy auto-fetch started — fetching from monosans/proxy-list");
 
-  // Start auto-health monitor with defaults from environment
-  const monitorEnabled = process.env.HEALTH_MONITOR_ENABLED === "true";
-  if (monitorEnabled) {
-    const intervalHours = parseInt(process.env.HEALTH_MONITOR_INTERVAL_HOURS || "24", 10);
-    const deleteDeadCookies = process.env.HEALTH_MONITOR_DELETE_DEAD !== "false";
-    const threads = parseInt(process.env.HEALTH_MONITOR_THREADS || "30", 10);
-    startHealthMonitor({
-      intervalHours,
-      deleteDeadCookies,
-      threads,
-      onComplete: (summary) => {
-        console.log("Health monitor completed:", summary);
-      },
-      onError: (error) => {
-        console.error("Health monitor error:", error);
-      },
-    });
-  }
+  // Start auto-health monitor by default unless explicitly disabled
+  const monitorEnabled = process.env.HEALTH_MONITOR_ENABLED !== "false";
+  const intervalHours = parseInt(process.env.HEALTH_MONITOR_INTERVAL_HOURS || "24", 10);
+  const deleteDeadCookies = process.env.HEALTH_MONITOR_DELETE_DEAD !== "false";
+  const threads = parseInt(process.env.HEALTH_MONITOR_THREADS || "30", 10);
+  startHealthMonitor({
+    intervalHours,
+    deleteDeadCookies,
+    threads,
+    onComplete: (summary) => {
+      console.log("Health monitor completed:", summary);
+    },
+    onError: (error) => {
+      console.error("Health monitor error:", error);
+    },
+  });
+  console.log(`Auto-health monitor ${monitorEnabled ? "started" : "disabled"} (interval: ${intervalHours}h, deleteDead: ${deleteDeadCookies}, threads: ${threads})`);
 
   app.listen(PORT, () => {
     console.log(`Netflix Cookie Checker server running on port ${PORT}`);
