@@ -19,7 +19,6 @@ import {
   X,
   Shield,
   History,
-  Monitor,
   ChevronDown,
   Network,
   Wifi,
@@ -61,9 +60,6 @@ import {
   getStaleHits,
   cleanupStaleHits,
   getGenerationHistory,
-  getHealthMonitorStatus,
-  configureHealthMonitor,
-  runHealthCheckNow,
   type ResultRecord,
   type GeneratedAccount,
   type GenerationHistoryRecord,
@@ -97,8 +93,6 @@ export default function Dashboard() {
   const [isCleaningStale, setIsCleaningStale] = useState(false);
   const [generationHistory, setGenerationHistory] = useState<GenerationHistoryRecord[]>([]);
   const [generationHistoryTotal, setGenerationHistoryTotal] = useState(0);
-  const [healthMonitor, setHealthMonitor] = useState<{ running: boolean; intervalHours: number } | null>(null);
-  const [isHealthCheckRunning, setIsHealthCheckRunning] = useState(false);
   const [recheckingHitId, setRecheckingHitId] = useState<number | null>(null);
   const [proxyPool, setProxyPool] = useState<{ total: number; alive: number; dead: number; lastFetch: number | null; isFetching: boolean } | null>(null);
   const [isRefreshingProxies, setIsRefreshingProxies] = useState(false);
@@ -107,7 +101,7 @@ export default function Dashboard() {
 
   const loadData = useCallback(async () => {
     try {
-      const [s, h, rc, cb, hl, fo, gh, st, hm, pp] = await Promise.all([
+      const [s, h, rc, cb, hl, fo, gh, st, pp] = await Promise.all([
         getStats().catch(() => null),
         checkHealth().catch(() => null),
         getRecheckCount().catch(() => null),
@@ -116,7 +110,6 @@ export default function Dashboard() {
         getHitLogFilters().catch(() => ({ countries: [], plans: [] })),
         getGenerationHistory(10, 0).catch(() => ({ history: [], total: 0 })),
         getStaleHits(7).catch(() => ({ count: 0, days: 7 })),
-        getHealthMonitorStatus().catch(() => ({ status: { running: false, intervalHours: 0 } })),
         fetch(`${import.meta.env.VITE_API_BASE_URL || ""}/api/proxies/status`).then((r) => r.json()).catch(() => null),
       ]);
       setStats(s);
@@ -129,7 +122,6 @@ export default function Dashboard() {
       setGenerationHistory((gh as any).history);
       setGenerationHistoryTotal((gh as any).total);
       setStaleHits(st as { count: number; days: number });
-      setHealthMonitor((hm as any).status);
       if (pp) setProxyPool(pp);
     } finally {
       setLoading(false);
@@ -328,17 +320,6 @@ export default function Dashboard() {
     }
   };
 
-  const handleToggleHealthMonitor = async () => {
-    try {
-      const enabled = !healthMonitor?.running;
-      const result = await configureHealthMonitor(enabled, 24, true, 30);
-      setHealthMonitor(result.status);
-      toast.success(enabled ? "Auto-health monitoring enabled" : "Auto-health monitoring disabled");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to configure health monitor");
-    }
-  };
-
   const handleRefreshProxies = async () => {
     setIsRefreshingProxies(true);
     try {
@@ -352,21 +333,6 @@ export default function Dashboard() {
       toast.error(err.message || "Failed to refresh proxies");
     } finally {
       setIsRefreshingProxies(false);
-    }
-  };
-
-  const handleRunHealthCheckNow = async () => {
-    setIsHealthCheckRunning(true);
-    try {
-      const summary = await runHealthCheckNow(true, 30);
-      toast.success(`Health check complete`, {
-        description: `${summary.deleted} dead deleted, ${summary.live} live`,
-      });
-      loadData();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to run health check");
-    } finally {
-      setIsHealthCheckRunning(false);
     }
   };
 
@@ -551,52 +517,6 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Health Monitor Controls */}
-      <Card className="mb-8 border-primary/20">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Monitor className="h-5 w-5 text-primary" />
-            Auto-Health Monitor
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">
-                Status: <span className={healthMonitor?.running ? "text-green-500" : "text-yellow-500"}>
-                  {healthMonitor?.running ? "Running (every 24h)" : "Disabled"}
-                </span>
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Automatically rechecks all stored hits and deletes dead cookies.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleRunHealthCheckNow}
-                disabled={isHealthCheckRunning}
-              >
-                {isHealthCheckRunning ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                )}
-                Run Now
-              </Button>
-              <Button
-                variant={healthMonitor?.running ? "destructive" : "default"}
-                size="sm"
-                onClick={handleToggleHealthMonitor}
-              >
-                {healthMonitor?.running ? "Disable" : "Enable"}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Cookie Hit Logs with Search & Filter */}
       <div className="mb-8">
