@@ -1,0 +1,4 @@
+[submodule "netflix-puke-kicker"]
+	path = netflix-cookie-checker
+	url = https://github.com/exhipper/netflix-puke-kicker.git
+	branch = main
